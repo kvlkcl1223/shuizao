@@ -197,27 +197,13 @@ void Motor_SetSpeed(uint8_t id, uint16_t speed)
 }
 
 /**
-  * @brief  逐路测试全部 8 路电机 (阻塞)
-  *         每路: 正转 5s → 停 2s → 反转 5s → 停 2s
+  * @brief  Start all 8 motors at the same time for test.
+  * @note   All motors run forward at MOTOR_SPEED_DEF and keep running.
   */
 void Motor_TestAll(void)
 {
     for (uint8_t id = 0; id < MOTOR_COUNT; id++)
     {
-        /* ---- 正转 5 秒 ---- */
         Motor_Run(id, MOTOR_FORWARD, MOTOR_SPEED_DEF);
-        HAL_Delay(5000);
-
-        /* ---- 停止 2 秒 ---- */
-        Motor_Stop(id);
-        HAL_Delay(2000);
-
-        /* ---- 反转 5 秒 ---- */
-        Motor_Run(id, MOTOR_REVERSE, MOTOR_SPEED_DEF);
-        HAL_Delay(5000);
-
-        /* ---- 停止 2 秒 ---- */
-        Motor_Stop(id);
-        HAL_Delay(2000);
     }
 }
