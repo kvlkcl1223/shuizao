@@ -74,8 +74,8 @@ void Motor_Stop(uint8_t id);
 void Motor_SetSpeed(uint8_t id, uint16_t speed);
 
 /**
-  * @brief  Start all 8 motors at the same time for test.
-  * @note   All motors run forward at MOTOR_SPEED_DEF and keep running.
+  * @brief  Test all 8 motors at the same time.
+  * @note   Forward 5s, stop 2s, reverse 5s, then keep reversing.
   */
 void Motor_TestAll(void);
 
