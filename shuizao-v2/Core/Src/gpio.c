@@ -53,10 +53,14 @@ void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, LED1_Pin|LED2_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : PG15_Pin PG16_Pin */
-  GPIO_InitStruct.Pin = PG15_Pin|PG16_Pin;
+  /*Configure GPIO pins : PG15_Pin PG16_Pin PG3_Pin PG4_Pin
+                           PG9_Pin PG10_Pin PG11_Pin PG12_Pin
+                           PG13_Pin */
+  GPIO_InitStruct.Pin = PG15_Pin|PG16_Pin|PG3_Pin|PG4_Pin
+                          |PG9_Pin|PG10_Pin|PG11_Pin|PG12_Pin
+                          |PG13_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pins : PG1_Pin PG2_Pin KEY2_Pin */
@@ -64,14 +68,6 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PG3_Pin PG4_Pin PG9_Pin PG10_Pin
-                           PG11_Pin PG12_Pin PG13_Pin */
-  GPIO_InitStruct.Pin = PG3_Pin|PG4_Pin|PG9_Pin|PG10_Pin
-                          |PG11_Pin|PG12_Pin|PG13_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_PULLUP;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pins : KEY1_Pin PG5_Pin PG6_Pin PG7_Pin
                            PG8_Pin */

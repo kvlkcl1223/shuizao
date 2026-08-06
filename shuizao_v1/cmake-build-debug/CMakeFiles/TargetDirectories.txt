@@ -1,3 +1,0 @@
-E:/jianzhi/rudongbeng/cmake-build-debug/CMakeFiles/project1.elf.dir
-E:/jianzhi/rudongbeng/cmake-build-debug/CMakeFiles/edit_cache.dir
-E:/jianzhi/rudongbeng/cmake-build-debug/CMakeFiles/rebuild_cache.dir

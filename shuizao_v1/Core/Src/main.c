@@ -647,40 +647,35 @@ int main(void)
           {
               HAL_Delay(10);
               PG_read_motor();
+              //触底了 → 回退寻找 PG[1]
               if(flag_PG_motor[0])
+              {
+                  motor_no();
+                  motor_forward();
+                  HAL_Delay(1000);
+                  while (1)
+                  {
+                      PG_read_motor();
+                      if(flag_PG_motor[1])
+                      {
+                          motor_no();
+                          break;
+                      }
+                      else if(flag_PG_motor[2])
+                      {
+                          //理论上不会发生的情况
+                          break;
+                      }
+                      HAL_Delay(10);
+                  }
+                  break;
+              }
+              //正好找到了 PG[1]
+              else if(flag_PG_motor[1])
               {
                   motor_no();
                   break;
               }
-//              //触底了
-//              if(flag_PG_motor[0])
-//              {
-//                  motor_no();
-//                  motor_forward();
-//                  HAL_Delay(1000);
-//                  while (1)
-//                  {
-//                      HAL_Delay(10);
-//                      PG_read_motor();
-//                      if(flag_PG_motor[1])
-//                      {
-//                          motor_no();
-//                          break;
-//                      }
-//                      else if(flag_PG_motor[3])
-//                      {
-//                          //理论上不会发生的情况
-//                          break;
-//                      }
-//                  }
-//                  break;
-//              }
-//              //正好找到了
-//              else if(flag_PG_motor[1])
-//              {
-//                  motor_no();
-//                  break;
-//              }
           }
           flag_S100=false;
 //          sendMessage("Motor finish");

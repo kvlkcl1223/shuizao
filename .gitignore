@@ -1,0 +1,51 @@
+# ============================================
+# STM32 嵌入式项目通用 .gitignore
+# 适用于 CLion/CMake + Keil MDK-ARM 混合项目
+# ============================================
+
+# ---------- 操作系统文件 ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+
+# ---------- shuizao_v1 (CLion + CMake + STM32CubeMX) ----------
+
+# CLion IDE 配置（个人化，不应共享）
+shuizao_v1/.idea/
+
+# CLion 构建输出目录
+shuizao_v1/cmake-build-*/
+shuizao_v1/cmake-build-debug/
+
+# CMake 生成文件
+shuizao_v1/cmake_install.cmake
+shuizao_v1/CMakeCache.txt
+shuizao_v1/CMakeFiles/
+shuizao_v1/Makefile
+shuizao_v1/.cmake/
+
+# Code::Blocks 项目文件（由 CMake 生成）
+shuizao_v1/*.cbp
+
+# CTest 输出
+shuizao_v1/Testing/
+
+# 构建产物（bin/hex/elf/map）
+shuizao_v1/*.bin
+shuizao_v1/*.hex
+shuizao_v1/*.elf
+shuizao_v1/*.map
+
+# 临时目录
+shuizao_v1/temp/
+
+# ---------- Keil MDK-ARM（适用于所有子项目）----------
+# 编译输出子目录（project1/、shuizao/、DebugConfig/、RTE/ 等）
+**/MDK-ARM/*/
+
+# ---------- STM32CubeMX 生成 ----------
+# .mxproject 记录 CubeMX 版本和最后配置信息（因人而异，可忽略）
+*.mxproject
