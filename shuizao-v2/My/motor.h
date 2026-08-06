@@ -65,6 +65,10 @@ void Motor_Run(uint8_t id, uint8_t direction, uint16_t speed);
   */
 void Motor_Stop(uint8_t id);
 
+void Motor_Coast(uint8_t id);
+
+void Motor_Brake(uint8_t id);
+
 /**
   * @brief  仅调整转速 (不改变方向)
   * @param  id     电机编号

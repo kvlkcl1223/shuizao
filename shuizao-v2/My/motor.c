@@ -160,6 +160,11 @@ void Motor_Run(uint8_t id, uint8_t direction, uint16_t speed)
   */
 void Motor_Stop(uint8_t id)
 {
+    Motor_Coast(id);
+}
+
+void Motor_Coast(uint8_t id)
+{
     if (id >= MOTOR_COUNT)
         return;
 
@@ -168,6 +173,18 @@ void Motor_Stop(uint8_t id)
     m->speed = 0;
 
     Motor_SetCCR(m, PWM_FULL_LOW, PWM_FULL_LOW);
+}
+
+void Motor_Brake(uint8_t id)
+{
+    if (id >= MOTOR_COUNT)
+        return;
+
+    Motor_Device *m = &motor_table[id];
+    m->dir   = MOTOR_STOP;
+    m->speed = 0;
+
+    Motor_SetCCR(m, PWM_FULL_HIGH, PWM_FULL_HIGH);
 }
 
 /**

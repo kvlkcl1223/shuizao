@@ -575,6 +575,36 @@
               <FileType>1</FileType>
               <FilePath>..\My\motor.c</FilePath>
             </File>
+            <File>
+              <FileName>app_config.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\My\app_config.c</FilePath>
+            </File>
+            <File>
+              <FileName>pg.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\My\pg.c</FilePath>
+            </File>
+            <File>
+              <FileName>pump.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\My\pump.c</FilePath>
+            </File>
+            <File>
+              <FileName>screen.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\My\screen.c</FilePath>
+            </File>
+            <File>
+              <FileName>protocol.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\My\protocol.c</FilePath>
+            </File>
+            <File>
+              <FileName>app.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\My\app.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

@@ -25,9 +25,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "motor.h"
-#include <stdio.h>
-#include <string.h>
+#include "app.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -54,7 +52,6 @@
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-void PG_Status_Send(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -99,10 +96,7 @@ int main(void)
   MX_USART2_UART_Init();
   MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
-  Motor_Init();
-
-  /* 上电自检: 逐路测试全部电机 (若不需要可注释掉) */
-  Motor_TestAll();
+  App_Init();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -112,8 +106,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    PG_Status_Send();
-    HAL_Delay(500);
+    App_Task();
   }
   /* USER CODE END 3 */
 }
@@ -164,6 +157,7 @@ void SystemClock_Config(void)
   * @note   格式: "PG01:1 PG02:0 ... PG16:1\r\n"
   *         波特率: 115200, 超时 100ms
   */
+#if 0
 void PG_Status_Send(void)
 {
     /* 引脚编号表 (按 PG1~PG16 顺序) */
@@ -195,6 +189,7 @@ void PG_Status_Send(void)
     HAL_UART_Transmit(&huart2, (uint8_t *)buf, len, 100);
 }
 
+#endif
 /* USER CODE END 4 */
 
 /**
