@@ -10,18 +10,34 @@
 /*
  * app.c
  * 主业务状态机实现。
- * 自动流程按配置表移动到指定 PG，执行固定时间吸取/喷淋，并在结束后回原点。
+ * 自动流程由体积档位表驱动：分阶段吸取、三段喷淋、可选人工预留 10ml，流程结束后回原点。
  */
+
+#define APP_TIME_MIN_MS 100U
+#define APP_TIME_MAX_MS 600000U
+#define APP_ALL_PUMP_MASK ((uint8_t)((1U << APP_PUMP_COUNT) - 1U))
 
 static App_State app_state = APP_STATE_IDLE;
 static App_Alarm app_alarm = APP_ALARM_NONE;
 
-/* 当前自动任务参数：体积只用于合法性和屏幕状态，具体阶段由配置表驱动。 */
-static uint16_t app_volume_ml = 0U;
+/* 当前自动任务参数。预留 10ml 只作为流程后的人工确认步骤，不再依赖 10ml 光电位。 */
 static uint8_t app_keep10 = 0U;
+static uint16_t app_manual_reserved_ml = 0U;
 static uint8_t app_pump_speed_percent = APP_DEFAULT_PUMP_SPEED_PERCENT;
 
-/* 阶段索引在吸取序列和喷淋序列中复用，每次切换大阶段时会重新置零。 */
+/* HMI 可临时修改的工艺时间；不写入 Flash，断电或复位后恢复默认值。 */
+static uint32_t app_aspirate_phase_ms = APP_ASPIRATE_PHASE_MS;
+static uint32_t app_trim10_ms = APP_TRIM_10ML_MS;
+
+/* START 后按体积档位表生成本次自动流程的吸取和喷淋目标。 */
+static PG_ID app_aspirate_sequence[APP_MAX_AUTO_PHASES];
+static uint8_t app_aspirate_phase_count = 0U;
+static PG_ID app_spray_sequence[APP_SPRAY_STAGE_COUNT];
+static uint8_t app_spray_phase_count = 0U;
+static uint8_t app_has_trim10 = 0U;
+static uint8_t app_spray_active_pump_mask = 0U;
+
+/* 阶段索引用于吸取序列和喷淋序列，切换大阶段时会重新置零。 */
 static uint8_t app_phase_index = 0U;
 static PG_ID app_target_pg = PG_INVALID;
 static uint32_t app_state_start_tick = 0U;
@@ -29,6 +45,9 @@ static uint32_t app_last_screen_tick = 0U;
 
 /* START 命令会先回原点，回原点完成后根据此标志继续自动流程。 */
 static bool app_auto_after_home = false;
+
+/* RETURN_HOME 可来自自动完成或 STOP 取消，完成路径才会进入人工补加确认。 */
+static bool app_return_after_success = false;
 
 /* 手动动作记录，用于到达 PG3/PG14 后自动停止。 */
 static Protocol_ManualAction app_manual_z_action = PROTOCOL_MANUAL_ACTION_NONE;
@@ -42,6 +61,17 @@ static uint32_t Now(void)
 static uint32_t Elapsed(uint32_t start_tick)
 {
     return Now() - start_tick;
+}
+
+static uint32_t App_ClampProcessTimeMs(uint32_t time_ms)
+{
+    if (time_ms < APP_TIME_MIN_MS) {
+        return APP_TIME_MIN_MS;
+    }
+    if (time_ms > APP_TIME_MAX_MS) {
+        return APP_TIME_MAX_MS;
+    }
+    return time_ms;
 }
 
 static void App_SetState(App_State state)
@@ -58,11 +88,12 @@ static bool App_IsAutoRunning(void)
            app_state == APP_STATE_CHECK_Y ||
            app_state == APP_STATE_MOVE_TO_ASPIRATE ||
            app_state == APP_STATE_ASPIRATING ||
-           app_state == APP_STATE_MOVE_TO_KEEP10 ||
-           app_state == APP_STATE_WAIT_MANUAL_CLEAN ||
+           app_state == APP_STATE_TRIM_ASPIRATING ||
            app_state == APP_STATE_MOVE_TO_SPRAY ||
            app_state == APP_STATE_SPRAYING ||
-           app_state == APP_STATE_RETURN_HOME;
+           app_state == APP_STATE_RETURN_HOME ||
+           app_state == APP_STATE_WAIT_MANUAL_CUP_CLEAN ||
+           app_state == APP_STATE_POWER_ON_RESET;
 }
 
 static const char *App_StateText(App_State state)
@@ -79,16 +110,17 @@ static const char *App_StateText(App_State state)
         return "MOVE ASP";
     case APP_STATE_ASPIRATING:
         return "ASPIRATE";
-    case APP_STATE_MOVE_TO_KEEP10:
-        return "MOVE 10ML";
-    case APP_STATE_WAIT_MANUAL_CLEAN:
-        return "WAIT CLEAN";
+    case APP_STATE_TRIM_ASPIRATING:
+        return "TRIM 10ML";
     case APP_STATE_MOVE_TO_SPRAY:
         return "MOVE SPRAY";
     case APP_STATE_SPRAYING:
+        /* 三段喷淋共用内置 6 泵补偿时间；每个泵按各自时间停止。 */
         return "SPRAY";
     case APP_STATE_RETURN_HOME:
         return "RETURN";
+    case APP_STATE_WAIT_MANUAL_CUP_CLEAN:
+        return "ADD 10ML";
     case APP_STATE_DONE:
         return "DONE";
     case APP_STATE_ERROR:
@@ -97,9 +129,104 @@ static const char *App_StateText(App_State state)
         return "ESTOP";
     case APP_STATE_MANUAL:
         return "MANUAL";
+    case APP_STATE_POWER_ON_RESET:
+        return "PWR HOME";
     default:
         return "UNKNOWN";
     }
+}
+
+static int8_t App_FindVolumeIndex(uint16_t volume_ml)
+{
+    for (uint8_t i = 0U; i < APP_VOLUME_POSITION_COUNT; i++) {
+        if (APP_VOLUME_POSITIONS[i].volume_ml == volume_ml) {
+            return (int8_t)i;
+        }
+    }
+
+    return -1;
+}
+
+static int8_t App_FindBaseVolumeIndex(uint16_t machine_volume_ml, uint16_t *trim_ml)
+{
+    int8_t best_index = -1;
+    uint16_t best_delta = 0xFFFFU;
+
+    /*
+     * 预留 10ml 时，机器目标体积可能落在两个传感器之间。
+     * 例如用户选 100ml 且预留 10ml，机器先按 100ml 定位，再按时间补吸约 10ml。
+     */
+    for (uint8_t i = 0U; i < APP_VOLUME_POSITION_COUNT; i++) {
+        uint16_t table_volume = APP_VOLUME_POSITIONS[i].volume_ml;
+        if (table_volume >= machine_volume_ml) {
+            uint16_t delta = (uint16_t)(table_volume - machine_volume_ml);
+            if (delta < best_delta) {
+                best_delta = delta;
+                best_index = (int8_t)i;
+            }
+        }
+    }
+
+    if (best_index < 0) {
+        return -1;
+    }
+
+    if (best_delta != 0U && best_delta != APP_MANUAL_RESERVED_VOLUME_ML) {
+        return -1;
+    }
+
+    if (trim_ml != 0) {
+        *trim_ml = best_delta;
+    }
+    return best_index;
+}
+
+static bool App_BuildAutoPlan(uint16_t volume_ml, uint8_t keep10)
+{
+    uint16_t reserved_ml = keep10 ? APP_MANUAL_RESERVED_VOLUME_ML : 0U;
+    uint16_t machine_volume_ml;
+    uint16_t trim_ml = 0U;
+    int8_t requested_index;
+    int8_t base_index;
+    int8_t spray2_index;
+    int8_t spray3_index;
+
+    requested_index = App_FindVolumeIndex(volume_ml);
+    if (requested_index < 0 || volume_ml <= reserved_ml) {
+        return false;
+    }
+
+    machine_volume_ml = (uint16_t)(volume_ml - reserved_ml);
+    base_index = App_FindBaseVolumeIndex(machine_volume_ml, &trim_ml);
+    spray2_index = App_FindVolumeIndex(APP_SPRAY_FIXED_VOLUME_STAGE2_ML);
+    spray3_index = App_FindVolumeIndex(APP_SPRAY_FIXED_VOLUME_STAGE3_ML);
+    if (base_index < 0 || spray2_index < 0 || spray3_index < 0) {
+        return false;
+    }
+
+    app_aspirate_phase_count = 0U;
+    for (uint8_t i = 0U; i <= (uint8_t)base_index; i++) {
+        PG_ID pg = APP_VOLUME_POSITIONS[i].aspirate_pg;
+        if (app_aspirate_phase_count >= APP_MAX_AUTO_PHASES || !PG_IsValid(pg)) {
+            return false;
+        }
+        app_aspirate_sequence[app_aspirate_phase_count++] = pg;
+    }
+
+    app_spray_phase_count = APP_SPRAY_STAGE_COUNT;
+    app_spray_sequence[0] = APP_VOLUME_POSITIONS[(uint8_t)base_index].first_spray_pg;
+    app_spray_sequence[1] = APP_VOLUME_POSITIONS[(uint8_t)spray2_index].aspirate_pg;
+    app_spray_sequence[2] = APP_VOLUME_POSITIONS[(uint8_t)spray3_index].aspirate_pg;
+    for (uint8_t i = 0U; i < app_spray_phase_count; i++) {
+        if (!PG_IsValid(app_spray_sequence[i])) {
+            return false;
+        }
+    }
+
+    app_has_trim10 = trim_ml ? 1U : 0U;
+    app_manual_reserved_ml = reserved_ml;
+    app_keep10 = keep10 ? 1U : 0U;
+    return app_aspirate_phase_count > 0U;
 }
 
 static void App_AllStop(void)
@@ -107,6 +234,7 @@ static void App_AllStop(void)
     /* 紧急停机共用出口：停全部泵，Z 轴刹车，并清手动动作记录。 */
     Pump_StopAll();
     Motor_Brake(APP_Z_MOTOR_ID);
+    app_spray_active_pump_mask = 0U;
     app_manual_z_action = PROTOCOL_MANUAL_ACTION_NONE;
     app_manual_pump_action = PROTOCOL_MANUAL_ACTION_NONE;
 }
@@ -179,10 +307,40 @@ static void App_Fail(App_Alarm alarm)
     /* 故障时立即停止所有执行机构，并把报警码同步到屏幕。 */
     app_alarm = alarm;
     app_auto_after_home = false;
+    app_return_after_success = false;
     App_AllStop();
     Screen_ShowAlarm((uint16_t)alarm);
     Screen_ShowMessage("ERROR");
     App_SetState(APP_STATE_ERROR);
+}
+
+static uint8_t App_DisplayPhase(void)
+{
+    if (app_state == APP_STATE_MOVE_TO_ASPIRATE ||
+        app_state == APP_STATE_ASPIRATING ||
+        app_state == APP_STATE_MOVE_TO_SPRAY ||
+        app_state == APP_STATE_SPRAYING) {
+        return (uint8_t)(app_phase_index + 1U);
+    }
+
+    if (app_state == APP_STATE_TRIM_ASPIRATING) {
+        return (uint8_t)(app_aspirate_phase_count + 1U);
+    }
+
+    return 0U;
+}
+
+static uint32_t App_GetSprayMaxMs(void)
+{
+    uint32_t max_ms = 0U;
+
+    for (uint8_t i = 0U; i < APP_PUMP_COUNT; i++) {
+        if (APP_SPRAY_PUMP_MS[i] > max_ms) {
+            max_ms = APP_SPRAY_PUMP_MS[i];
+        }
+    }
+
+    return max_ms;
 }
 
 static uint8_t App_ProgressPercent(void)
@@ -190,11 +348,12 @@ static uint8_t App_ProgressPercent(void)
     uint32_t duration = 0U;
     uint32_t elapsed;
 
-    /* 只有吸取和喷淋阶段有固定时长进度，其它移动阶段显示 0。 */
     if (app_state == APP_STATE_ASPIRATING) {
-        duration = APP_ASPIRATE_PHASE_MS;
-    } else if (app_state == APP_STATE_SPRAYING) {
-        duration = APP_SPRAY_PHASE_MS;
+        duration = app_aspirate_phase_ms;
+    } else if (app_state == APP_STATE_TRIM_ASPIRATING) {
+        duration = app_trim10_ms;
+    } else if (app_state == APP_STATE_SPRAYING && app_phase_index < app_spray_phase_count) {
+        duration = App_GetSprayMaxMs();
     }
 
     if (duration == 0U) {
@@ -221,7 +380,7 @@ static void App_ReportStatus(bool force)
     app_last_screen_tick = now;
     Screen_ShowMessage(App_StateText(app_state));
     Screen_UpdateStatus((uint8_t)app_state,
-                        (uint8_t)(app_phase_index + 1U),
+                        App_DisplayPhase(),
                         app_pump_speed_percent,
                         PG_ReadMask(),
                         app_keep10,
@@ -241,20 +400,25 @@ static void App_StartAuto(uint16_t volume_ml, uint8_t keep10)
         return;
     }
 
-    /* 当前版本只接受 50ml 和 100ml，后续扩展体积时在这里放开。 */
-    if (volume_ml != 50U && volume_ml != 100U) {
+    if (App_FindVolumeIndex(volume_ml) < 0) {
         app_alarm = APP_ALARM_BAD_VOLUME;
         Screen_ShowMessage("BAD VOL");
         Screen_ShowAlarm((uint16_t)app_alarm);
         return;
     }
 
+    if (!App_BuildAutoPlan(volume_ml, keep10)) {
+        app_alarm = APP_ALARM_BAD_CONFIG;
+        Screen_ShowMessage("BAD CFG");
+        Screen_ShowAlarm((uint16_t)app_alarm);
+        return;
+    }
+
     /* 每次启动都先回原点，再检查 Y 轴并进入吸取阶段。 */
     app_alarm = APP_ALARM_NONE;
-    app_volume_ml = volume_ml;
-    app_keep10 = keep10 ? 1U : 0U;
     app_phase_index = 0U;
     app_auto_after_home = true;
+    app_return_after_success = false;
     App_AllStop();
     App_EnterMoveState(APP_STATE_HOMING, APP_Z_HOME_PG);
     App_ReportStatus(true);
@@ -265,6 +429,7 @@ static void App_StartHome(bool continue_auto)
     /* HOME 可单独执行，也可作为 START 的前置动作。 */
     app_alarm = APP_ALARM_NONE;
     app_auto_after_home = continue_auto;
+    app_return_after_success = false;
     app_phase_index = 0U;
     Pump_StopAll();
     App_EnterMoveState(APP_STATE_HOMING, APP_Z_HOME_PG);
@@ -333,6 +498,38 @@ static void App_HandleManual(const Protocol_Command *command)
     App_ReportStatus(true);
 }
 
+static void App_HandleSetParam(const Protocol_Command *command)
+{
+    uint32_t value;
+
+    if (App_IsAutoRunning()) {
+        app_alarm = APP_ALARM_BUSY;
+        Screen_ShowMessage("BUSY");
+        Screen_ShowAlarm((uint16_t)app_alarm);
+        return;
+    }
+
+    value = App_ClampProcessTimeMs(command->param_value);
+
+    switch (command->param_target) {
+    case PROTOCOL_PARAM_ASPIRATE_MS:
+        app_aspirate_phase_ms = value;
+        break;
+    case PROTOCOL_PARAM_TRIM10_MS:
+        app_trim10_ms = value;
+        break;
+    default:
+        app_alarm = APP_ALARM_BAD_COMMAND;
+        Screen_ShowMessage("BAD CMD");
+        Screen_ShowAlarm((uint16_t)app_alarm);
+        return;
+    }
+
+    app_alarm = APP_ALARM_NONE;
+    Screen_ShowMessage("SET OK");
+    App_ReportStatus(true);
+}
+
 static void App_HandleCommand(const Protocol_Command *command)
 {
     /* 协议层只负责解析，这里才真正执行命令对应的业务动作。 */
@@ -343,9 +540,15 @@ static void App_HandleCommand(const Protocol_Command *command)
 
     case PROTOCOL_CMD_STOP:
         App_AllStop();
-        /* STOP 在自动流程中按“停止后回原点”处理。 */
-        if (App_IsAutoRunning()) {
-            app_auto_after_home = false;
+        app_auto_after_home = false;
+        app_return_after_success = false;
+        /* STOP 在自动流程中按“停止后回原点”处理；人工补加等待中则直接取消。 */
+        if (app_state == APP_STATE_POWER_ON_RESET) {
+            App_EnterMoveState(APP_STATE_POWER_ON_RESET, APP_Z_HOME_PG);
+        } else if (app_state == APP_STATE_WAIT_MANUAL_CUP_CLEAN) {
+            app_manual_reserved_ml = 0U;
+            App_SetState(APP_STATE_IDLE);
+        } else if (App_IsAutoRunning()) {
             App_EnterMoveState(APP_STATE_RETURN_HOME, APP_Z_HOME_PG);
         } else {
             App_SetState(APP_STATE_IDLE);
@@ -356,6 +559,7 @@ static void App_HandleCommand(const Protocol_Command *command)
         /* ESTOP 立即停机，不自动回原点。 */
         App_AllStop();
         app_auto_after_home = false;
+        app_return_after_success = false;
         app_alarm = APP_ALARM_NONE;
         App_SetState(APP_STATE_ESTOP);
         Screen_ShowMessage("ESTOP");
@@ -366,17 +570,23 @@ static void App_HandleCommand(const Protocol_Command *command)
         break;
 
     case PROTOCOL_CMD_OK:
-        /* 人工清洗确认后，从喷淋序列第一个阶段继续。 */
-        if (app_state == APP_STATE_WAIT_MANUAL_CLEAN) {
-            app_phase_index = 0U;
-            App_EnterMoveState(APP_STATE_MOVE_TO_SPRAY,
-                               APP_SPRAY_PG_SEQUENCE[app_phase_index]);
+        /* 人工用 10ml 清洗接液烧杯并补加完成后，屏幕发送 #OK; 确认整套流程完成。 */
+        if (app_state == APP_STATE_WAIT_MANUAL_CUP_CLEAN) {
+            app_manual_reserved_ml = 0U;
+            App_SetState(APP_STATE_DONE);
+            Screen_ShowMessage("DONE");
+            App_ReportStatus(true);
         }
         break;
 
     case PROTOCOL_CMD_SPEED_SET:
         app_pump_speed_percent = Pump_ClampSpeedPercent(command->speed_percent);
+        app_alarm = APP_ALARM_NONE;
         App_ReportStatus(true);
+        break;
+
+    case PROTOCOL_CMD_SET_PARAM:
+        App_HandleSetParam(command);
         break;
 
     case PROTOCOL_CMD_MANUAL:
@@ -432,6 +642,64 @@ static void App_TaskManual(void)
     }
 }
 
+static void App_StartSprayPhaseZero(void)
+{
+    app_phase_index = 0U;
+    App_EnterMoveState(APP_STATE_MOVE_TO_SPRAY, app_spray_sequence[app_phase_index]);
+}
+
+static void App_StartSprayPumps(void)
+{
+    App_SetState(APP_STATE_SPRAYING);
+    app_spray_active_pump_mask = 0U;
+
+    /* 三段喷淋共用同一套 6 泵补偿时间：同开，按各自时间分别停止。 */
+    for (uint8_t i = 0U; i < APP_PUMP_COUNT; i++) {
+        if (APP_SPRAY_PUMP_MS[i] > 0U) {
+            Pump_RunOne(i, PUMP_DIR_OUT, app_pump_speed_percent);
+            app_spray_active_pump_mask |= (uint8_t)(1U << i);
+        } else {
+            Pump_StopOne(i);
+        }
+    }
+
+    app_spray_active_pump_mask &= APP_ALL_PUMP_MASK;
+}
+
+static void App_AdvanceSprayPhase(void)
+{
+    Pump_StopAll();
+    app_spray_active_pump_mask = 0U;
+    app_phase_index++;
+
+    if (app_phase_index < app_spray_phase_count) {
+        App_EnterMoveState(APP_STATE_MOVE_TO_SPRAY,
+                           app_spray_sequence[app_phase_index]);
+    } else {
+        /* 鑷姩鍠锋穻缁撴潫鍚庡繀椤诲洖鍘熺偣銆?*/
+        app_return_after_success = true;
+        App_EnterMoveState(APP_STATE_RETURN_HOME, APP_Z_HOME_PG);
+    }
+}
+
+static void App_TaskSpraying(void)
+{
+    uint32_t elapsed = Elapsed(app_state_start_tick);
+
+    for (uint8_t i = 0U; i < APP_PUMP_COUNT; i++) {
+        uint8_t pump_bit = (uint8_t)(1U << i);
+        if ((app_spray_active_pump_mask & pump_bit) != 0U &&
+            elapsed >= APP_SPRAY_PUMP_MS[i]) {
+            Pump_StopOne(i);
+            app_spray_active_pump_mask &= (uint8_t)(~pump_bit);
+        }
+    }
+
+    if (app_spray_active_pump_mask == 0U) {
+        App_AdvanceSprayPhase();
+    }
+}
+
 static void App_TaskAuto(void)
 {
     /* 自动流程状态机：所有等待都用 HAL_GetTick 计时，避免长阻塞延时。 */
@@ -448,12 +716,24 @@ static void App_TaskAuto(void)
         }
         break;
 
+    case APP_STATE_POWER_ON_RESET:
+        if (App_TargetReached()) {
+            app_auto_after_home = false;
+            app_return_after_success = false;
+            App_AllStop();
+            App_SetState(APP_STATE_IDLE);
+            Screen_ShowMessage("READY");
+        } else if (App_MoveTimedOut()) {
+            App_Fail(APP_ALARM_Z_TIMEOUT);
+        }
+        break;
+
     case APP_STATE_CHECK_Y:
         /* 默认 PG1 为 Y 轴允许工作位置，低电平有效。 */
         if (PG_IsActive(APP_Y_READY_PG)) {
             app_phase_index = 0U;
             App_EnterMoveState(APP_STATE_MOVE_TO_ASPIRATE,
-                               APP_ASPIRATE_PG_SEQUENCE[app_phase_index]);
+                               app_aspirate_sequence[app_phase_index]);
         } else {
             App_Fail(APP_ALARM_Y_NOT_READY);
         }
@@ -469,69 +749,79 @@ static void App_TaskAuto(void)
         break;
 
     case APP_STATE_ASPIRATING:
-        /* 每个吸取阶段使用同一个固定时间和同一个全局泵速。 */
-        if (Elapsed(app_state_start_tick) >= APP_ASPIRATE_PHASE_MS) {
+        /* 每个吸取阶段使用同一固定时间、同一全局泵速。 */
+        if (Elapsed(app_state_start_tick) >= app_aspirate_phase_ms) {
             Pump_StopAll();
             app_phase_index++;
-            if (app_phase_index < APP_ASPIRATE_PHASE_COUNT) {
+            if (app_phase_index < app_aspirate_phase_count) {
                 App_EnterMoveState(APP_STATE_MOVE_TO_ASPIRATE,
-                                   APP_ASPIRATE_PG_SEQUENCE[app_phase_index]);
-            } else if (app_keep10) {
-                /* 预留 10ml 时移动到配置的 10ml PG，并等待屏幕 #OK;。 */
-                App_EnterMoveState(APP_STATE_MOVE_TO_KEEP10, APP_Z_KEEP10_PG);
+                                   app_aspirate_sequence[app_phase_index]);
+            } else if (app_has_trim10) {
+                /* 目标体积减 10ml 时没有独立 PG，当前以定时补吸作为占位实现。 */
+                Pump_RunAll(PUMP_DIR_IN, app_pump_speed_percent);
+                App_SetState(APP_STATE_TRIM_ASPIRATING);
             } else {
-                app_phase_index = 0U;
-                App_EnterMoveState(APP_STATE_MOVE_TO_SPRAY,
-                                   APP_SPRAY_PG_SEQUENCE[app_phase_index]);
+                App_StartSprayPhaseZero();
             }
         }
         break;
 
-    case APP_STATE_MOVE_TO_KEEP10:
-        if (App_TargetReached()) {
-            Screen_ShowMessage("CLEAN CUP");
-            App_SetState(APP_STATE_WAIT_MANUAL_CLEAN);
-        } else if (App_MoveTimedOut()) {
-            App_Fail(APP_ALARM_Z_TIMEOUT);
+    case APP_STATE_TRIM_ASPIRATING:
+        if (Elapsed(app_state_start_tick) >= app_trim10_ms) {
+            Pump_StopAll();
+            App_StartSprayPhaseZero();
         }
-        break;
-
-    case APP_STATE_WAIT_MANUAL_CLEAN:
         break;
 
     case APP_STATE_MOVE_TO_SPRAY:
         if (App_TargetReached()) {
-            Pump_RunAll(PUMP_DIR_OUT, app_pump_speed_percent);
-            App_SetState(APP_STATE_SPRAYING);
+            App_StartSprayPumps();
         } else if (App_MoveTimedOut()) {
             App_Fail(APP_ALARM_Z_TIMEOUT);
         }
         break;
 
     case APP_STATE_SPRAYING:
-        /* 每个喷淋阶段使用同一个固定时间和同一个全局泵速。 */
-        if (Elapsed(app_state_start_tick) >= APP_SPRAY_PHASE_MS) {
+        /* 三个喷淋阶段可分别设置时间，但仍使用同一泵速和同一泵组。 */
+        App_TaskSpraying();
+#if 0
+        if (app_phase_index < app_spray_phase_count &&
+            false) {
             Pump_StopAll();
             app_phase_index++;
-            if (app_phase_index < APP_SPRAY_PHASE_COUNT) {
+            if (app_phase_index < app_spray_phase_count) {
                 App_EnterMoveState(APP_STATE_MOVE_TO_SPRAY,
-                                   APP_SPRAY_PG_SEQUENCE[app_phase_index]);
+                                   app_spray_sequence[app_phase_index]);
             } else {
-                /* 自动流程结束后必须回原点。 */
+                /* 自动喷淋结束后必须回原点。 */
+                app_return_after_success = true;
                 App_EnterMoveState(APP_STATE_RETURN_HOME, APP_Z_HOME_PG);
             }
         }
+#endif
         break;
 
     case APP_STATE_RETURN_HOME:
         if (App_TargetReached()) {
             App_AllStop();
             app_auto_after_home = false;
-            App_SetState(APP_STATE_DONE);
-            Screen_ShowMessage("DONE");
+            if (app_return_after_success && app_manual_reserved_ml > 0U) {
+                app_return_after_success = false;
+                Screen_ShowMessage("ADD 10ML");
+                App_SetState(APP_STATE_WAIT_MANUAL_CUP_CLEAN);
+            } else if (app_return_after_success) {
+                app_return_after_success = false;
+                App_SetState(APP_STATE_DONE);
+                Screen_ShowMessage("DONE");
+            } else {
+                App_SetState(APP_STATE_IDLE);
+            }
         } else if (App_MoveTimedOut()) {
             App_Fail(APP_ALARM_Z_TIMEOUT);
         }
+        break;
+
+    case APP_STATE_WAIT_MANUAL_CUP_CLEAN:
         break;
 
     default:
@@ -550,8 +840,21 @@ void App_Init(void)
     app_state = APP_STATE_IDLE;
     app_alarm = APP_ALARM_NONE;
     app_pump_speed_percent = Pump_ClampSpeedPercent(APP_DEFAULT_PUMP_SPEED_PERCENT);
+    app_aspirate_phase_ms = App_ClampProcessTimeMs(APP_ASPIRATE_PHASE_MS);
+    app_trim10_ms = App_ClampProcessTimeMs(APP_TRIM_10ML_MS);
     app_last_screen_tick = 0U;
+    app_auto_after_home = false;
+    app_return_after_success = false;
+    app_phase_index = 0U;
     App_AllStop();
+
+#if APP_POWER_ON_RESET_ENABLE
+    /* 上电后先复位到最高点。最高点由 APP_Z_HOME_PG 配置，当前默认 PG3。 */
+    App_EnterMoveState(APP_STATE_POWER_ON_RESET, APP_Z_HOME_PG);
+#else
+    App_SetState(APP_STATE_IDLE);
+#endif
+
     App_ReportStatus(true);
 }
 

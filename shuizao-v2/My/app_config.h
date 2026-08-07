@@ -3,8 +3,8 @@
 
 /*
  * app_config.h
- * 应用层硬件映射和默认参数声明。
- * 所有后续需要频繁调整的 PG 顺序、默认时间、速度和屏幕控件名都集中在这里。
+ * 应用层硬件映射和默认工艺参数声明。
+ * 光电顺序、体积档位、默认时间、速度和屏幕控件名都集中在这里，后续现场调试优先改本模块。
  */
 
 #ifdef __cplusplus
@@ -17,26 +17,42 @@ extern "C" {
 
 #define APP_PUMP_COUNT 6U
 
+/* 自动流程最多经过的吸取阶段数量。当前体积表最多 10 个阶段，预留余量方便后续增档。 */
+#define APP_MAX_AUTO_PHASES             12U
+#define APP_SPRAY_STAGE_COUNT           3U
+
+/* 预留给科研人员人工清洗接液烧杯的体积。固件不保存该选项，每次由屏幕 START 命令携带。 */
+#define APP_MANUAL_RESERVED_VOLUME_ML   10U
+
 /* 蠕动泵速度使用屏幕显示百分比，实际转换到 Motor_Run 的 0~1000 速度值。 */
 #define APP_MIN_PUMP_SPEED_PERCENT      10U
 #define APP_MAX_PUMP_SPEED_PERCENT      100U
 #define APP_DEFAULT_PUMP_SPEED_PERCENT  60U
 
-/* Z 轴默认运动速度百分比。若上机发现过快或过慢，优先改这里。 */
+/* Z 轴默认运动速度百分比。若上机后发现过快或过慢，优先改这里。 */
 #define APP_Z_SPEED_PERCENT             70U
 
-/* 自动流程默认时间。当前未确认真实工艺时间，先用 5 秒占位。 */
+/* 自动流程默认时间。真实工艺时间未确认前先用占位值，HMI 也可通过 #SET 临时修改。 */
 #define APP_ASPIRATE_PHASE_MS           5000U
-#define APP_SPRAY_PHASE_MS              5000U
+#define APP_TRIM_10ML_MS                1000U
+#define APP_SPRAY_PUMP1_MS              5000U
+#define APP_SPRAY_PUMP2_MS              5000U
+#define APP_SPRAY_PUMP3_MS              5000U
+#define APP_SPRAY_PUMP4_MS              5000U
+#define APP_SPRAY_PUMP5_MS              5000U
+#define APP_SPRAY_PUMP6_MS              5000U
 
 /* Z 轴运动超时保护，避免传感器异常时电机持续运行。 */
 #define APP_Z_MOVE_TIMEOUT_MS           30000U
 #define APP_HOME_TIMEOUT_MS             45000U
 
+/* 上电后是否自动复位到最高点。最高点由 APP_Z_HOME_PG 决定，当前默认 PG3。 */
+#define APP_POWER_ON_RESET_ENABLE       1U
+
 /* MCU 定期向串口屏刷新状态的周期。 */
 #define APP_SCREEN_UPDATE_MS            500U
 
-/* 陶晶驰屏幕控件名称。若 HMI 控件名不同，只需改这些宏。 */
+/* 陶晶驰屏幕控件名称。若 HMI 控件名不同，只需修改这些宏。 */
 #define APP_SCREEN_MESSAGE_OBJ          "t6"
 #define APP_SCREEN_STATE_OBJ            "n_state"
 #define APP_SCREEN_PHASE_OBJ            "n_phase"
@@ -45,6 +61,14 @@ extern "C" {
 #define APP_SCREEN_KEEP10_OBJ           "n_keep10"
 #define APP_SCREEN_ALARM_OBJ            "n_alarm"
 #define APP_SCREEN_PROGRESS_OBJ         "j_progress"
+
+/* 体积档位表。first_spray_pg 是“吸取位置下一档喷淋”的实际目标，避免 50ml/100ml 共用 PG 时逻辑写死。 */
+typedef struct {
+    uint16_t volume_ml;
+    PG_ID aspirate_pg;
+    PG_ID first_spray_pg;
+    uint8_t precise_aspirate;
+} App_VolumePosition;
 
 /* 设备映射：Z 轴、电机方向、蠕动泵编号都集中由 app_config.c 定义。 */
 extern const Motor_ID APP_Z_MOTOR_ID;
@@ -59,17 +83,19 @@ extern const uint8_t APP_PUMP_OUT_DIRECTION;
 extern const PG_ID APP_Y_READY_PG;
 extern const PG_ID APP_Z_HOME_PG;
 extern const PG_ID APP_Z_BOTTOM_PG;
-extern const PG_ID APP_Z_KEEP10_PG;
 
 /* Z 轴从原点到最底部的物理顺序表，用于自动判断上升/下降方向。 */
 extern const PG_ID APP_Z_ORDER[];
 extern const uint8_t APP_Z_ORDER_COUNT;
 
-/* 自动吸取和喷淋阶段序列。当前按用户要求为 PG3->PG4、PG4->PG3。 */
-extern const PG_ID APP_ASPIRATE_PG_SEQUENCE[];
-extern const uint8_t APP_ASPIRATE_PHASE_COUNT;
-extern const PG_ID APP_SPRAY_PG_SEQUENCE[];
-extern const uint8_t APP_SPRAY_PHASE_COUNT;
+/* 自动吸取体积档位表，按从高液位到低液位的顺序排列。 */
+extern const App_VolumePosition APP_VOLUME_POSITIONS[];
+extern const uint8_t APP_VOLUME_POSITION_COUNT;
+
+/* 第二、第三次喷淋使用固定体积档位。 */
+extern const uint16_t APP_SPRAY_FIXED_VOLUME_STAGE2_ML;
+extern const uint16_t APP_SPRAY_FIXED_VOLUME_STAGE3_ML;
+extern const uint32_t APP_SPRAY_PUMP_MS[APP_PUMP_COUNT];
 
 #ifdef __cplusplus
 }

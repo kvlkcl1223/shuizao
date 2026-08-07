@@ -5,7 +5,7 @@
 /*
  * protocol.c
  * USART3 协议解析实现。
- * 中断层只收集字节，命令解析和入队在主循环中完成，避免中断里执行业务逻辑。
+ * 中断层只收集字节，命令解析和入队在主循环中完成，避免在中断里执行业务逻辑。
  */
 
 #define PROTOCOL_UART                  (&huart3)
@@ -62,20 +62,44 @@ bool Protocol_PopCommand(Protocol_Command *command)
     return true;
 }
 
+static uint32_t ParseUint32(const char *text)
+{
+    unsigned long value;
+
+    if (text == 0) {
+        return 0U;
+    }
+
+    value = strtoul(text, 0, 10);
+    if (value > 0xFFFFFFFFUL) {
+        return 0xFFFFFFFFU;
+    }
+
+    return (uint32_t)value;
+}
+
+static uint16_t ParseUint16(const char *text)
+{
+    uint32_t value = ParseUint32(text);
+
+    if (value > 0xFFFFUL) {
+        return 0xFFFFU;
+    }
+
+    return (uint16_t)value;
+}
+
 static uint8_t ParsePercent(const char *text, uint8_t default_value)
 {
-    int value;
+    uint16_t value;
 
     if (text == 0) {
         return default_value;
     }
 
     /* 这里只做字符串到 uint8_t 的安全转换，范围夹紧交给泵控制层。 */
-    value = atoi(text);
-    if (value < 0) {
-        return 0U;
-    }
-    if (value > 255) {
+    value = ParseUint16(text);
+    if (value > 255U) {
         return 255U;
     }
 
@@ -130,14 +154,40 @@ static void ParseManual(char **tokens, uint8_t token_count)
     QueuePush(&command);
 }
 
+static void ParseSet(char **tokens, uint8_t token_count)
+{
+    Protocol_Command command;
+
+    /* 工艺时间设置格式：#SET,ASP_MS,5000;，只保存在本次上电运行内。 */
+    if (token_count < 3U) {
+        return;
+    }
+
+    memset(&command, 0, sizeof(command));
+    command.type = PROTOCOL_CMD_SET_PARAM;
+
+    if (StringEquals(tokens[1], "ASP_MS") ||
+        StringEquals(tokens[1], "ASPIRATE_MS")) {
+        command.param_target = PROTOCOL_PARAM_ASPIRATE_MS;
+    } else if (StringEquals(tokens[1], "TRIM10_MS") ||
+               StringEquals(tokens[1], "TRIM_MS")) {
+        command.param_target = PROTOCOL_PARAM_TRIM10_MS;
+    } else {
+        return;
+    }
+
+    command.param_value = ParseUint32(tokens[2]);
+    QueuePush(&command);
+}
+
 static void ParseFrame(char *frame)
 {
     char *tokens[8];
-    uint8_t token_count = 0;
+    uint8_t token_count = 0U;
     char *token;
     Protocol_Command command;
 
-    /* strtok 会原地切分 frame_buffer，因此 frame 必须是可写缓冲区。 */
+    /* strtok 会原地切割 frame_buffer，因此 frame 必须是可写缓冲区。 */
     token = strtok(frame, ",");
     while (token != 0 && token_count < (sizeof(tokens) / sizeof(tokens[0]))) {
         tokens[token_count++] = token;
@@ -151,12 +201,12 @@ static void ParseFrame(char *frame)
     memset(&command, 0, sizeof(command));
 
     if (StringEquals(tokens[0], "START")) {
-        /* #START,50,0; 或 #START,100,1; */
+        /* #START,100,1;，volume 支持 50~800ml 档位，keep10 为人工预留 10ml 标志。 */
         if (token_count < 2U) {
             return;
         }
         command.type = PROTOCOL_CMD_START;
-        command.volume_ml = (uint16_t)atoi(tokens[1]);
+        command.volume_ml = ParseUint16(tokens[1]);
         command.keep10 = 0U;
         if (token_count >= 3U) {
             command.keep10 = ParsePercent(tokens[2], 0U) ? 1U : 0U;
@@ -182,6 +232,8 @@ static void ParseFrame(char *frame)
         command.type = PROTOCOL_CMD_SPEED_SET;
         command.speed_percent = ParsePercent(tokens[1], 0U);
         QueuePush(&command);
+    } else if (StringEquals(tokens[0], "SET")) {
+        ParseSet(tokens, token_count);
     } else if (StringEquals(tokens[0], "MAN")) {
         /* 手动控制命令继续交给 ParseManual 解析。 */
         ParseManual(tokens, token_count);
@@ -308,7 +360,7 @@ void Protocol_Process(void)
     __enable_irq();
 
     /* 逐字节喂给帧状态机，支持一包里包含多条 #...; 命令。 */
-    for (uint16_t i = 0; i < len; i++) {
+    for (uint16_t i = 0U; i < len; i++) {
         FeedByte(local_buffer[i]);
     }
 

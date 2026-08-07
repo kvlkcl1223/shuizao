@@ -24,11 +24,19 @@ typedef enum {
     PROTOCOL_CMD_HOME,
     PROTOCOL_CMD_OK,
     PROTOCOL_CMD_SPEED_SET,
+    PROTOCOL_CMD_SET_PARAM,
     PROTOCOL_CMD_MANUAL,
     PROTOCOL_CMD_GET_PG,
     PROTOCOL_CMD_GET_STATE,
     PROTOCOL_CMD_RESET
 } Protocol_CommandType;
+
+/* #SET 命令可临时调整的工艺时间参数，断电后恢复 app_config.h 中的默认值。 */
+typedef enum {
+    PROTOCOL_PARAM_NONE = 0,
+    PROTOCOL_PARAM_ASPIRATE_MS,
+    PROTOCOL_PARAM_TRIM10_MS
+} Protocol_ParamTarget;
 
 /* 手动控制目标：Z 轴或全部蠕动泵。 */
 typedef enum {
@@ -53,6 +61,8 @@ typedef struct {
     uint16_t volume_ml;
     uint8_t keep10;
     uint8_t speed_percent;
+    Protocol_ParamTarget param_target;
+    uint32_t param_value;
     Protocol_ManualTarget manual_target;
     Protocol_ManualAction manual_action;
 } Protocol_Command;
