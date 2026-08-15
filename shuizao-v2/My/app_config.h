@@ -52,6 +52,16 @@ extern "C" {
 /* MCU 定期向串口屏刷新状态的周期。 */
 #define APP_SCREEN_UPDATE_MS            500U
 
+/* USART2 调试日志配置。USART3 仍专用于陶晶驰串口屏。 */
+#define APP_LOG_ENABLE                  1U
+#define APP_LOG_UART_TIMEOUT_MS         50U
+
+/*
+ * LED1 生命灯使用 TIM5 周期中断分频翻转。
+ * 当前 CubeMX 参数看起来约为 1ms 中断，默认 1000 次翻转一次；若 TIM5 改成 1s 中断，改为 1U。
+ */
+#define APP_LED1_HEARTBEAT_TIM5_TICKS   1000U
+
 /* 陶晶驰屏幕控件名称。若 HMI 控件名不同，只需修改这些宏。 */
 #define APP_SCREEN_MESSAGE_OBJ          "t6"
 #define APP_SCREEN_STATE_OBJ            "n_state"

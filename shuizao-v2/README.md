@@ -13,6 +13,8 @@
 当前约定：
 
 - 串口屏通信使用 `USART3`。
+- 调试日志输出使用 `USART2`，115200 8N1，只输出日志，不接收 HMI 命令。
+- LED1 是生命灯，由 TIM5 周期中断分频翻转，上电并启动应用后应持续闪烁。
 - 屏幕发给 MCU 的命令格式为 `#命令,参数;`。
 - MCU 给屏幕写陶晶驰/Nextion 原生命令，自动追加 `0xFF 0xFF 0xFF`。
 - PG1 和 PG2 属于 Y 轴位置检测，目前默认只使用 PG1 作为允许工作位置。
@@ -37,12 +39,17 @@
 | `My/app.c` / `My/app.h` | 主状态机，负责自动流程、手动流程、停止、急停、回原点、屏幕状态刷新 |
 | `My/app_config.c` / `My/app_config.h` | 硬件映射、PG 顺序、体积档位、默认时间、默认速度、屏幕控件名 |
 | `My/protocol.c` / `My/protocol.h` | 解析屏幕发来的 `#...;` 文本命令 |
+| `My/logger.c` / `My/logger.h` | USART2 调试日志输出 |
 | `My/screen.c` / `My/screen.h` | MCU 向陶晶驰屏幕写控件 |
 | `My/pg.c` / `My/pg.h` | PG1~PG16 光电输入读取，当前按低电平有效 |
 | `My/pump.c` / `My/pump.h` | 6 路蠕动泵统一控制 |
 | `My/motor.c` / `My/motor.h` | 8 路 DRV8870 电机/PWM 底层驱动 |
 
 串口中断接入点在：
+
+- `Core/Src/stm32f1xx_it.c`
+
+生命灯定时器回调也在：
 
 - `Core/Src/stm32f1xx_it.c`
 
@@ -57,11 +64,13 @@
 MCU 每次上电或执行 `#RESET;` 软件复位后，会自动进入上电复位状态：
 
 1. 初始化 GPIO、DMA、定时器、USART、电机、泵、协议和屏幕。
-2. 停止全部蠕动泵，Z 轴刹车。
-3. Z 轴向最高点运动。
-4. 当前默认最高点为 PG3，即 `APP_Z_HOME_PG`。
-5. PG3 触发后停止，状态进入 `IDLE`。
-6. 如果超过 `APP_HOME_TIMEOUT_MS` 仍未触发 PG3，进入 `ERROR` 并报 `Z_TIMEOUT`。
+2. 启动 USART2 调试日志。
+3. 启动 TIM5 定时中断，LED1 作为生命灯按 `APP_LED1_HEARTBEAT_TIM5_TICKS` 分频翻转。
+4. 停止全部蠕动泵，Z 轴刹车。
+5. Z 轴向最高点运动。
+6. 当前默认最高点为 PG3，即 `APP_Z_HOME_PG`。
+7. PG3 触发后停止，状态进入 `IDLE`。
+8. 如果超过 `APP_HOME_TIMEOUT_MS` 仍未触发 PG3，进入 `ERROR` 并报 `Z_TIMEOUT`。
 
 上电复位过程中：
 
@@ -590,7 +599,33 @@ const uint8_t APP_PUMP_OUT_DIRECTION = MOTOR_REVERSE;
 - 如果调试后确定了稳定工艺参数，应把默认值写回 `My/app_config.h`。
 - 若 Z 轴实际移动距离很长导致误报超时，调大 `APP_Z_MOVE_TIMEOUT_MS` 或 `APP_HOME_TIMEOUT_MS`。
 
-### 8.8 修改屏幕控件名
+### 8.8 修改 USART2 日志和 LED1 生命灯
+
+文件：
+
+- `My/app_config.h`
+- `Core/Src/stm32f1xx_it.c`
+- `My/app.c`
+
+日志开关：
+
+```c
+#define APP_LOG_ENABLE                  1U
+#define APP_LOG_UART_TIMEOUT_MS         50U
+#define APP_LED1_HEARTBEAT_TIM5_TICKS   1000U
+```
+
+说明：
+
+- `USART2` 是调试日志口，默认 115200 8N1。
+- `USART3` 仍然是陶晶驰串口屏通信口。
+- `APP_LOG_ENABLE` 改为 `0U` 可以关闭日志输出。
+- 日志在 `My/logger.c` 中实现，已加入 Keil 工程的 `My` 分组。
+- LED1 在 `HAL_TIM_PeriodElapsedCallback()` 中由 TIM5 分频翻转。
+- `App_Init()` 中调用 `HAL_TIM_Base_Start_IT(&htim5)`，如果 CubeMX 后续重生成时改了定时器编号，要同步改这里和中断回调里的 TIM 判断。
+- 当前 `tim.c` 参数看起来约为 1ms 中断，所以默认 `APP_LED1_HEARTBEAT_TIM5_TICKS=1000U`；如果现场确认 TIM5 已经是 1s 中断，改成 `1U`。
+
+### 8.9 修改屏幕控件名
 
 文件：
 
@@ -611,7 +646,7 @@ const uint8_t APP_PUMP_OUT_DIRECTION = MOTOR_REVERSE;
 
 如果陶晶驰工程里的控件名不一致，要么改 HMI 控件名，要么改这里。两边必须一致。
 
-### 8.9 修改 PG 引脚映射
+### 8.10 修改 PG 引脚映射
 
 文件：
 
@@ -637,7 +672,7 @@ const uint8_t APP_PUMP_OUT_DIRECTION = MOTOR_REVERSE;
 3. 确认 `Core/Inc/main.h` 中仍有 `PG1_Pin` 到 `PG16_Pin`。
 4. 确认 `My/pg.c` 的 `pg_table` 顺序和 `PG_ID` 枚举一致。
 
-### 8.10 修改串口协议
+### 8.11 修改串口协议
 
 文件：
 
@@ -668,11 +703,14 @@ const uint8_t APP_PUMP_OUT_DIRECTION = MOTOR_REVERSE;
 ### 9.1 上电基础检查
 
 1. 烧录固件。
-2. 打开串口屏页面。
-3. 确认上电后 `n_state.val` 先进入 14，或 `t6` 显示 `PWR HOME`。
-4. 确认 Z 轴向最高点 PG3 运动。
-5. PG3 触发后，确认 `t6` 显示 `READY`，或 `n_state.val` 为 0。
-6. 发送 `#GET,STATE;`，确认屏幕状态控件能刷新。
+2. 打开 USART2 串口助手，参数 115200 8N1。
+3. 确认能看到 `[BOOT] logger ready`、`[BOOT] tim5 heartbeat start` 等启动日志。
+4. 确认 LED1 大约每 1s 翻转一次。如果不闪，优先检查 TIM5 是否启动、`APP_LED1_HEARTBEAT_TIM5_TICKS` 是否匹配 TIM5 周期、LED1 引脚是否仍为 PB4。
+5. 打开串口屏页面。
+6. 确认上电后 `n_state.val` 先进入 14，或 `t6` 显示 `PWR HOME`。
+7. 确认 Z 轴向最高点 PG3 运动。
+8. PG3 触发后，确认 `t6` 显示 `READY`，或 `n_state.val` 为 0。
+9. 发送 `#GET,STATE;`，确认屏幕状态控件能刷新，同时 USART2 应输出 `[CMD] GET_STATE`。
 
 ### 9.2 PG 输入检查
 
@@ -769,7 +807,7 @@ return PG_ReadRaw(id) == GPIO_PIN_RESET;
 
 - 6 路泵不区分泵组，全部同时运行。
 - 每个吸取阶段使用同一个时间和同一个泵速。
-- 三个喷淋阶段可以分别设置时间，但使用同一个泵速和泵组。
+- 三段喷淋共用同一套 6 泵补偿时间，不通过串口屏设置。
 - `precise_aspirate` 字段已经在体积表中预留，但当前未做独立定位吸取动作。
 - `keep10` 不保存，每次 START 时由屏幕传入。
 - 运行时设置的速度和时间不保存。
@@ -788,7 +826,7 @@ return PG_ReadRaw(id) == GPIO_PIN_RESET;
 本工程当前可用 `arm-none-eabi-gcc` 做语法检查，不生成固件：
 
 ```powershell
-arm-none-eabi-gcc -mcpu=cortex-m3 -mthumb -std=c99 -Wall -Wextra -finput-charset=UTF-8 -fsyntax-only -DUSE_HAL_DRIVER -DSTM32F103xE -I.\Core\Inc -I.\Drivers\STM32F1xx_HAL_Driver\Inc -I.\Drivers\STM32F1xx_HAL_Driver\Inc\Legacy -I.\Drivers\CMSIS\Device\ST\STM32F1xx\Include -I.\Drivers\CMSIS\Include -I.\My .\Core\Src\main.c .\Core\Src\stm32f1xx_it.c .\My\motor.c .\My\app_config.c .\My\pg.c .\My\pump.c .\My\screen.c .\My\protocol.c .\My\app.c
+arm-none-eabi-gcc -mcpu=cortex-m3 -mthumb -std=c99 -Wall -Wextra -finput-charset=UTF-8 -fsyntax-only -DUSE_HAL_DRIVER -DSTM32F103xE -I.\Core\Inc -I.\Drivers\STM32F1xx_HAL_Driver\Inc -I.\Drivers\STM32F1xx_HAL_Driver\Inc\Legacy -I.\Drivers\CMSIS\Device\ST\STM32F1xx\Include -I.\Drivers\CMSIS\Include -I.\My .\Core\Src\main.c .\Core\Src\stm32f1xx_it.c .\My\motor.c .\My\app_config.c .\My\pg.c .\My\pump.c .\My\screen.c .\My\protocol.c .\My\logger.c .\My\app.c
 ```
 
 在 Keil MDK 中编译时，确认 `MDK-ARM/shuizao.uvprojx` 的 `My` 分组包含以下文件：
@@ -800,6 +838,7 @@ arm-none-eabi-gcc -mcpu=cortex-m3 -mthumb -std=c99 -Wall -Wextra -finput-charset
 - `protocol.c`
 - `screen.c`
 - `motor.c`
+- `logger.c`
 
 ## 12. 最容易踩错的点
 

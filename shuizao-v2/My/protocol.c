@@ -305,7 +305,7 @@ void Protocol_UART_IRQHandler(UART_HandleTypeDef *huart)
     uint16_t len;
     uint16_t remaining;
 
-    /* 只处理 USART3 的 IDLE 中断，USART2 保留给调试或备用。 */
+    /* 只处理 USART3 的 IDLE 中断，USART2 专用于调试日志输出。 */
     if (huart == 0 || huart->Instance != USART3) {
         return;
     }

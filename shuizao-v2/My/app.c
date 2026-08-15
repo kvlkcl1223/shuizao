@@ -1,10 +1,12 @@
 #include "app.h"
 #include "app_config.h"
+#include "logger.h"
 #include "motor.h"
 #include "pg.h"
 #include "protocol.h"
 #include "pump.h"
 #include "screen.h"
+#include "tim.h"
 #include <stdbool.h>
 
 /*
@@ -77,6 +79,9 @@ static uint32_t App_ClampProcessTimeMs(uint32_t time_ms)
 static void App_SetState(App_State state)
 {
     /* 所有状态切换统一更新时间戳，便于超时和进度计算。 */
+    if (app_state != state) {
+        Logger_State((uint8_t)state);
+    }
     app_state = state;
     app_state_start_tick = Now();
 }
@@ -276,6 +281,7 @@ static void App_StartZMoveTo(PG_ID target)
 static void App_EnterMoveState(App_State state, PG_ID target)
 {
     App_SetState(state);
+    Logger_Value("MOVE", "target_pg", PG_ToNumber(target));
     App_StartZMoveTo(target);
 }
 
@@ -309,6 +315,7 @@ static void App_Fail(App_Alarm alarm)
     app_auto_after_home = false;
     app_return_after_success = false;
     App_AllStop();
+    Logger_Alarm((uint16_t)alarm);
     Screen_ShowAlarm((uint16_t)alarm);
     Screen_ShowMessage("ERROR");
     App_SetState(APP_STATE_ERROR);
@@ -395,6 +402,7 @@ static void App_StartAuto(uint16_t volume_ml, uint8_t keep10)
           app_state == APP_STATE_DONE ||
           app_state == APP_STATE_ERROR)) {
         app_alarm = APP_ALARM_BUSY;
+        Logger_Info("AUTO", "start rejected busy");
         Screen_ShowMessage("BUSY");
         Screen_ShowAlarm((uint16_t)app_alarm);
         return;
@@ -402,6 +410,7 @@ static void App_StartAuto(uint16_t volume_ml, uint8_t keep10)
 
     if (App_FindVolumeIndex(volume_ml) < 0) {
         app_alarm = APP_ALARM_BAD_VOLUME;
+        Logger_Info("AUTO", "start rejected bad volume");
         Screen_ShowMessage("BAD VOL");
         Screen_ShowAlarm((uint16_t)app_alarm);
         return;
@@ -409,6 +418,7 @@ static void App_StartAuto(uint16_t volume_ml, uint8_t keep10)
 
     if (!App_BuildAutoPlan(volume_ml, keep10)) {
         app_alarm = APP_ALARM_BAD_CONFIG;
+        Logger_Info("AUTO", "start rejected bad config");
         Screen_ShowMessage("BAD CFG");
         Screen_ShowAlarm((uint16_t)app_alarm);
         return;
@@ -420,6 +430,8 @@ static void App_StartAuto(uint16_t volume_ml, uint8_t keep10)
     app_auto_after_home = true;
     app_return_after_success = false;
     App_AllStop();
+    Logger_Value("AUTO", "volume", volume_ml);
+    Logger_Value("AUTO", "keep10", app_keep10);
     App_EnterMoveState(APP_STATE_HOMING, APP_Z_HOME_PG);
     App_ReportStatus(true);
 }
@@ -432,6 +444,7 @@ static void App_StartHome(bool continue_auto)
     app_return_after_success = false;
     app_phase_index = 0U;
     Pump_StopAll();
+    Logger_Value("HOME", "continue_auto", continue_auto ? 1U : 0U);
     App_EnterMoveState(APP_STATE_HOMING, APP_Z_HOME_PG);
 }
 
@@ -442,6 +455,7 @@ static void App_HandleManual(const Protocol_Command *command)
     /* 自动流程运行中禁止手动动作，防止状态机和手动控制抢执行机构。 */
     if (App_IsAutoRunning()) {
         app_alarm = APP_ALARM_BUSY;
+        Logger_Info("MAN", "rejected busy");
         Screen_ShowMessage("BUSY");
         Screen_ShowAlarm((uint16_t)app_alarm);
         return;
@@ -458,17 +472,20 @@ static void App_HandleManual(const Protocol_Command *command)
             Pump_StopAll();
             app_manual_pump_action = PROTOCOL_MANUAL_ACTION_NONE;
             app_manual_z_action = PROTOCOL_MANUAL_ACTION_UP;
+            Logger_Value("MAN", "z_up_speed", speed);
             Motor_Run(APP_Z_MOTOR_ID, APP_Z_UP_DIRECTION, Pump_SpeedPercentToMotorSpeed(speed));
             App_SetState(APP_STATE_MANUAL);
         } else if (command->manual_action == PROTOCOL_MANUAL_ACTION_DOWN) {
             Pump_StopAll();
             app_manual_pump_action = PROTOCOL_MANUAL_ACTION_NONE;
             app_manual_z_action = PROTOCOL_MANUAL_ACTION_DOWN;
+            Logger_Value("MAN", "z_down_speed", speed);
             Motor_Run(APP_Z_MOTOR_ID, APP_Z_DOWN_DIRECTION, Pump_SpeedPercentToMotorSpeed(speed));
             App_SetState(APP_STATE_MANUAL);
         } else if (command->manual_action == PROTOCOL_MANUAL_ACTION_STOP) {
             Motor_Brake(APP_Z_MOTOR_ID);
             app_manual_z_action = PROTOCOL_MANUAL_ACTION_NONE;
+            Logger_Info("MAN", "z stop");
             if (app_manual_pump_action == PROTOCOL_MANUAL_ACTION_NONE) {
                 App_SetState(APP_STATE_IDLE);
             }
@@ -478,17 +495,20 @@ static void App_HandleManual(const Protocol_Command *command)
             Motor_Brake(APP_Z_MOTOR_ID);
             app_manual_z_action = PROTOCOL_MANUAL_ACTION_NONE;
             app_manual_pump_action = PROTOCOL_MANUAL_ACTION_IN;
+            Logger_Value("MAN", "pump_in_speed", speed);
             Pump_RunAll(PUMP_DIR_IN, speed);
             App_SetState(APP_STATE_MANUAL);
         } else if (command->manual_action == PROTOCOL_MANUAL_ACTION_OUT) {
             Motor_Brake(APP_Z_MOTOR_ID);
             app_manual_z_action = PROTOCOL_MANUAL_ACTION_NONE;
             app_manual_pump_action = PROTOCOL_MANUAL_ACTION_OUT;
+            Logger_Value("MAN", "pump_out_speed", speed);
             Pump_RunAll(PUMP_DIR_OUT, speed);
             App_SetState(APP_STATE_MANUAL);
         } else if (command->manual_action == PROTOCOL_MANUAL_ACTION_STOP) {
             Pump_StopAll();
             app_manual_pump_action = PROTOCOL_MANUAL_ACTION_NONE;
+            Logger_Info("MAN", "pump stop");
             if (app_manual_z_action == PROTOCOL_MANUAL_ACTION_NONE) {
                 App_SetState(APP_STATE_IDLE);
             }
@@ -504,6 +524,7 @@ static void App_HandleSetParam(const Protocol_Command *command)
 
     if (App_IsAutoRunning()) {
         app_alarm = APP_ALARM_BUSY;
+        Logger_Info("SET", "rejected busy");
         Screen_ShowMessage("BUSY");
         Screen_ShowAlarm((uint16_t)app_alarm);
         return;
@@ -514,9 +535,11 @@ static void App_HandleSetParam(const Protocol_Command *command)
     switch (command->param_target) {
     case PROTOCOL_PARAM_ASPIRATE_MS:
         app_aspirate_phase_ms = value;
+        Logger_Value("SET", "asp_ms", value);
         break;
     case PROTOCOL_PARAM_TRIM10_MS:
         app_trim10_ms = value;
+        Logger_Value("SET", "trim10_ms", value);
         break;
     default:
         app_alarm = APP_ALARM_BAD_COMMAND;
@@ -533,6 +556,8 @@ static void App_HandleSetParam(const Protocol_Command *command)
 static void App_HandleCommand(const Protocol_Command *command)
 {
     /* 协议层只负责解析，这里才真正执行命令对应的业务动作。 */
+    Logger_Command(command);
+
     switch (command->type) {
     case PROTOCOL_CMD_START:
         App_StartAuto(command->volume_ml, command->keep10);
@@ -542,6 +567,7 @@ static void App_HandleCommand(const Protocol_Command *command)
         App_AllStop();
         app_auto_after_home = false;
         app_return_after_success = false;
+        Logger_Info("CMD", "stop handled");
         /* STOP 在自动流程中按“停止后回原点”处理；人工补加等待中则直接取消。 */
         if (app_state == APP_STATE_POWER_ON_RESET) {
             App_EnterMoveState(APP_STATE_POWER_ON_RESET, APP_Z_HOME_PG);
@@ -561,6 +587,7 @@ static void App_HandleCommand(const Protocol_Command *command)
         app_auto_after_home = false;
         app_return_after_success = false;
         app_alarm = APP_ALARM_NONE;
+        Logger_Info("CMD", "estop handled");
         App_SetState(APP_STATE_ESTOP);
         Screen_ShowMessage("ESTOP");
         break;
@@ -575,6 +602,7 @@ static void App_HandleCommand(const Protocol_Command *command)
             app_manual_reserved_ml = 0U;
             App_SetState(APP_STATE_DONE);
             Screen_ShowMessage("DONE");
+            Logger_Info("AUTO", "manual 10ml confirmed");
             App_ReportStatus(true);
         }
         break;
@@ -582,6 +610,7 @@ static void App_HandleCommand(const Protocol_Command *command)
     case PROTOCOL_CMD_SPEED_SET:
         app_pump_speed_percent = Pump_ClampSpeedPercent(command->speed_percent);
         app_alarm = APP_ALARM_NONE;
+        Logger_Value("SET", "speed", app_pump_speed_percent);
         App_ReportStatus(true);
         break;
 
@@ -645,6 +674,7 @@ static void App_TaskManual(void)
 static void App_StartSprayPhaseZero(void)
 {
     app_phase_index = 0U;
+    Logger_Info("SPRAY", "start sequence");
     App_EnterMoveState(APP_STATE_MOVE_TO_SPRAY, app_spray_sequence[app_phase_index]);
 }
 
@@ -652,6 +682,8 @@ static void App_StartSprayPumps(void)
 {
     App_SetState(APP_STATE_SPRAYING);
     app_spray_active_pump_mask = 0U;
+    Logger_Value("SPRAY", "stage", (uint32_t)app_phase_index + 1U);
+    Logger_Value("SPRAY", "target_pg", PG_ToNumber(app_spray_sequence[app_phase_index]));
 
     /* 三段喷淋共用同一套 6 泵补偿时间：同开，按各自时间分别停止。 */
     for (uint8_t i = 0U; i < APP_PUMP_COUNT; i++) {
@@ -670,14 +702,16 @@ static void App_AdvanceSprayPhase(void)
 {
     Pump_StopAll();
     app_spray_active_pump_mask = 0U;
+    Logger_Value("SPRAY", "stage_done", (uint32_t)app_phase_index + 1U);
     app_phase_index++;
 
     if (app_phase_index < app_spray_phase_count) {
         App_EnterMoveState(APP_STATE_MOVE_TO_SPRAY,
                            app_spray_sequence[app_phase_index]);
     } else {
-        /* 鑷姩鍠锋穻缁撴潫鍚庡繀椤诲洖鍘熺偣銆?*/
+        /* 自动喷淋结束后必须回原点。 */
         app_return_after_success = true;
+        Logger_Info("SPRAY", "sequence done");
         App_EnterMoveState(APP_STATE_RETURN_HOME, APP_Z_HOME_PG);
     }
 }
@@ -692,6 +726,7 @@ static void App_TaskSpraying(void)
             elapsed >= APP_SPRAY_PUMP_MS[i]) {
             Pump_StopOne(i);
             app_spray_active_pump_mask &= (uint8_t)(~pump_bit);
+            Logger_Value("SPRAY", "pump_stop", (uint32_t)i + 1U);
         }
     }
 
@@ -706,6 +741,7 @@ static void App_TaskAuto(void)
     switch (app_state) {
     case APP_STATE_HOMING:
         if (App_TargetReached()) {
+            Logger_Info("HOME", "reached");
             if (app_auto_after_home) {
                 App_SetState(APP_STATE_CHECK_Y);
             } else {
@@ -721,6 +757,7 @@ static void App_TaskAuto(void)
             app_auto_after_home = false;
             app_return_after_success = false;
             App_AllStop();
+            Logger_Info("BOOT", "power home reached");
             App_SetState(APP_STATE_IDLE);
             Screen_ShowMessage("READY");
         } else if (App_MoveTimedOut()) {
@@ -732,15 +769,19 @@ static void App_TaskAuto(void)
         /* 默认 PG1 为 Y 轴允许工作位置，低电平有效。 */
         if (PG_IsActive(APP_Y_READY_PG)) {
             app_phase_index = 0U;
+            Logger_Info("AUTO", "y ready");
             App_EnterMoveState(APP_STATE_MOVE_TO_ASPIRATE,
                                app_aspirate_sequence[app_phase_index]);
         } else {
+            Logger_Info("AUTO", "y not ready");
             App_Fail(APP_ALARM_Y_NOT_READY);
         }
         break;
 
     case APP_STATE_MOVE_TO_ASPIRATE:
         if (App_TargetReached()) {
+            Logger_Value("ASP", "stage", (uint32_t)app_phase_index + 1U);
+            Logger_Value("ASP", "target_pg", PG_ToNumber(app_aspirate_sequence[app_phase_index]));
             Pump_RunAll(PUMP_DIR_IN, app_pump_speed_percent);
             App_SetState(APP_STATE_ASPIRATING);
         } else if (App_MoveTimedOut()) {
@@ -752,12 +793,14 @@ static void App_TaskAuto(void)
         /* 每个吸取阶段使用同一固定时间、同一全局泵速。 */
         if (Elapsed(app_state_start_tick) >= app_aspirate_phase_ms) {
             Pump_StopAll();
+            Logger_Value("ASP", "stage_done", (uint32_t)app_phase_index + 1U);
             app_phase_index++;
             if (app_phase_index < app_aspirate_phase_count) {
                 App_EnterMoveState(APP_STATE_MOVE_TO_ASPIRATE,
                                    app_aspirate_sequence[app_phase_index]);
             } else if (app_has_trim10) {
                 /* 目标体积减 10ml 时没有独立 PG，当前以定时补吸作为占位实现。 */
+                Logger_Info("ASP", "trim10 start");
                 Pump_RunAll(PUMP_DIR_IN, app_pump_speed_percent);
                 App_SetState(APP_STATE_TRIM_ASPIRATING);
             } else {
@@ -769,6 +812,7 @@ static void App_TaskAuto(void)
     case APP_STATE_TRIM_ASPIRATING:
         if (Elapsed(app_state_start_tick) >= app_trim10_ms) {
             Pump_StopAll();
+            Logger_Info("ASP", "trim10 done");
             App_StartSprayPhaseZero();
         }
         break;
@@ -782,37 +826,25 @@ static void App_TaskAuto(void)
         break;
 
     case APP_STATE_SPRAYING:
-        /* 三个喷淋阶段可分别设置时间，但仍使用同一泵速和同一泵组。 */
+        /* 三段喷淋共用内置 6 泵补偿时间。 */
         App_TaskSpraying();
-#if 0
-        if (app_phase_index < app_spray_phase_count &&
-            false) {
-            Pump_StopAll();
-            app_phase_index++;
-            if (app_phase_index < app_spray_phase_count) {
-                App_EnterMoveState(APP_STATE_MOVE_TO_SPRAY,
-                                   app_spray_sequence[app_phase_index]);
-            } else {
-                /* 自动喷淋结束后必须回原点。 */
-                app_return_after_success = true;
-                App_EnterMoveState(APP_STATE_RETURN_HOME, APP_Z_HOME_PG);
-            }
-        }
-#endif
         break;
 
     case APP_STATE_RETURN_HOME:
         if (App_TargetReached()) {
             App_AllStop();
             app_auto_after_home = false;
+            Logger_Info("HOME", "return reached");
             if (app_return_after_success && app_manual_reserved_ml > 0U) {
                 app_return_after_success = false;
                 Screen_ShowMessage("ADD 10ML");
+                Logger_Info("AUTO", "wait manual 10ml");
                 App_SetState(APP_STATE_WAIT_MANUAL_CUP_CLEAN);
             } else if (app_return_after_success) {
                 app_return_after_success = false;
                 App_SetState(APP_STATE_DONE);
                 Screen_ShowMessage("DONE");
+                Logger_Info("AUTO", "done");
             } else {
                 App_SetState(APP_STATE_IDLE);
             }
@@ -836,6 +868,13 @@ void App_Init(void)
     Pump_Init();
     Protocol_Init();
     Screen_Init();
+    Logger_Init();
+
+    if (HAL_TIM_Base_Start_IT(&htim5) == HAL_OK) {
+        Logger_Info("BOOT", "tim5 heartbeat start");
+    } else {
+        Logger_Info("BOOT", "tim5 heartbeat start failed");
+    }
 
     app_state = APP_STATE_IDLE;
     app_alarm = APP_ALARM_NONE;
@@ -850,6 +889,7 @@ void App_Init(void)
 
 #if APP_POWER_ON_RESET_ENABLE
     /* 上电后先复位到最高点。最高点由 APP_Z_HOME_PG 配置，当前默认 PG3。 */
+    Logger_Info("BOOT", "power home start");
     App_EnterMoveState(APP_STATE_POWER_ON_RESET, APP_Z_HOME_PG);
 #else
     App_SetState(APP_STATE_IDLE);

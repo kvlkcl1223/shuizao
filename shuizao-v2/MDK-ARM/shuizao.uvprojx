@@ -601,6 +601,11 @@
               <FilePath>..\My\protocol.c</FilePath>
             </File>
             <File>
+              <FileName>logger.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\My\logger.c</FilePath>
+            </File>
+            <File>
               <FileName>app.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\My\app.c</FilePath>
