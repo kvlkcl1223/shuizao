@@ -1,6 +1,6 @@
 # 陶晶驰串口屏与 STM32 通信协议
 
-本文档对应 `shuizao-v2` 当前固件。串口屏连接 `USART3`，调试日志连接 `USART2`。
+本文档对应 `shuizao-v3` 当前固件。串口屏连接 `USART3`，调试日志连接 `USART2`。
 
 - 波特率：115200
 - 数据位：8
@@ -8,7 +8,7 @@
 - 校验位：无
 - MCU 接收方式：USART3 DMA + IDLE 中断
 - 字符编码：屏幕发给 MCU 的命令使用 ASCII
-- MCU 上电或收到 `#RESET;` 软件复位后，会自动复位到最高点；当前最高点为 PG3。
+- MCU 上电或收到 `#RESET;` 软件复位后，会先短时下行，再上行复位到最高点；当前最高点为 PG3。
 
 USART2 调试日志：
 
@@ -45,14 +45,17 @@ USART2 调试日志：
 
 ```text
 [0000000012ms][BOOT] logger_ready uart=USART2 baud=115200 format=ASCII
-[0000000020ms][CMD] rx=START volume_ml=100 keep10=1 pgmask=0x0004
-[0000000025ms][AUTO] plan volume_ml=100 machine_ml=90 reserved_ml=10 asp_count=9 spray_count=3 trim10=1 pump_speed=60%
-[0000000030ms][STATE] code=1 name=HOMING pgmask=0x0004
-[0000000032ms][MOVE] target_pg=PG3 current_z_index=0 target_z_index=0 dir=STOP motor_speed=0 pgmask=0x0004
-[0000001500ms][ASP] start stage=1/9 target_pg=PG4 duration_ms=5000 pump_speed=60% pgmask=0x0008
-[0000006501ms][ASP] done stage=1 elapsed_ms=5001 pgmask=0x0008
-[0000010000ms][SPRAY] pump_stop stage=1 pump=3 duration_ms=5000 elapsed_ms=5000 active_mask=0x37 pgmask=0x0010
-[0000045001ms][ALARM] code=4 name=Z_TIMEOUT state=14/POWER_ON_RESET target_pg=PG3 pgmask=0x0000 elapsed_ms=45001 timeout_ms=45000
+[0000000015ms][BOOT] power_reset_down_ms=1000
+[0000001016ms][BOOT] power_reset_down_stop reason=TIME_DONE
+[0000001017ms][BOOT] power_reset_up_seek_home
+[0000005000ms][CMD] rx=START volume_ml=100 keep10=1 pgmask=0x0004
+[0000005005ms][AUTO] plan volume_ml=100 machine_ml=90 reserved_ml=10 asp_count=9 spray_count=3 trim10=1 pump_speed=60%
+[0000005010ms][STATE] code=1 name=HOMING pgmask=0x0004
+[0000005012ms][MOVE] step_target=HOME step_index=0 final_target=HOME final_index=0 current_index=-1 mode=SENSOR sensor_pg=PG3 dir=FORWARD motor_speed=700 limit_ms=45000 pgmask=0x0000
+[0000006500ms][ASP] start stage=1/9 target_pos=800ml target_index=1 sensor_pg=PG0 duration_ms=5000 pump_speed=60% pgmask=0x0008
+[0000011501ms][ASP] done stage=1 elapsed_ms=5001 pgmask=0x0008
+[0000015000ms][SPRAY] pump_stop stage=1 pump=3 duration_ms=5000 elapsed_ms=5000 active_mask=0x37 pgmask=0x0010
+[0000045001ms][ALARM] code=4 name=Z_TIMEOUT state=14/POWER_ON_RESET target_pos=HOME target_index=0 sensor_pg=PG3 pgmask=0x0000 elapsed_ms=45001 timeout_ms=45000
 ```
 
 ## 1. 基本帧格式
@@ -179,7 +182,7 @@ prints "#OK;",0
 含义：
 
 - `STOP`：停止当前动作。若自动流程正在运行，停止泵和 Z 轴后回原点；人工补加等待中发送则取消并回到空闲。
-- 上电复位状态下发送 `STOP` 不取消复位，Z 轴会继续回最高点。
+- 上电复位状态下发送 `STOP` 不取消复位；若正在下行，会停止下行并继续上行寻找 PG3。
 - `ESTOP`：立即停止全部泵和 Z 轴，进入急停状态，不自动回原点。
 - `HOME`：Z 轴向原点运动，默认原点为 PG3。
 - `RESET`：触发 `HAL_NVIC_SystemReset()`。
@@ -213,7 +216,7 @@ prints "#OK;",0
 保护：
 
 - 上升到原点 PG3 后自动停止。
-- 下降到底部 PG14 后自动停止。
+- 下降到底部 PG6 后自动停止。
 - 自动流程运行中拒绝手动 Z 轴命令。
 
 ### 5.2 手动蠕动泵
@@ -330,27 +333,48 @@ t6.txt="READY" FF FF FF
 | 蠕动泵 1~6 | DRV8870 第 2~7 路，`MOTOR_2` 到 `MOTOR_7` |
 | 备用电机 | DRV8870 第 8 路，`MOTOR_8` |
 | Y 轴允许工作位置 | 默认 PG1 |
-| Z 轴原点/定点 | PG3 |
+| Z 轴上限/原点 | PG3 |
+| Z 轴 100ml 定位 | PG4 |
+| Z 轴 50ml 定位 | PG5 |
 | 上电复位目标 | PG3 |
-| Z 轴底部 | PG14 |
+| Z 轴下限/底部 | PG6 |
 | PG 有效电平 | 低电平有效 |
 
 ## 11. 当前体积档位和喷淋规则
 
 体积档位集中在 `My/app_config.c` 的 `APP_VOLUME_POSITIONS`，当前默认：
 
-| 体积 | 吸取 PG | 第一次喷淋 PG | 说明 |
+| 体积 | 吸取逻辑位置 | 第一次喷淋逻辑位置 | 到位方式 |
 |---:|---|---|---|
-| 800ml | PG4 | PG5 | 停一段时间 |
-| 700ml | PG5 | PG6 | 停一段时间 |
-| 600ml | PG6 | PG7 | 停一段时间 |
-| 500ml | PG7 | PG8 | 停一段时间 |
-| 400ml | PG8 | PG9 | 停一段时间 |
-| 300ml | PG9 | PG10 | 停一段时间 |
-| 200ml | PG10 | PG11 | 含定位吸取 |
-| 150ml | PG11 | PG12 | 含定位吸取 |
-| 100ml | PG12 | PG13 | 含定位吸取 |
-| 50ml | PG13 | PG14 | 定位吸取 |
+| 800ml | `APP_Z_POS_800ML` | `APP_Z_POS_700ML` | 定时步进 |
+| 700ml | `APP_Z_POS_700ML` | `APP_Z_POS_600ML` | 定时步进 |
+| 600ml | `APP_Z_POS_600ML` | `APP_Z_POS_500ML` | 定时步进 |
+| 500ml | `APP_Z_POS_500ML` | `APP_Z_POS_400ML` | 定时步进 |
+| 400ml | `APP_Z_POS_400ML` | `APP_Z_POS_300ML` | 定时步进 |
+| 300ml | `APP_Z_POS_300ML` | `APP_Z_POS_200ML` | 定时步进 |
+| 200ml | `APP_Z_POS_200ML` | `APP_Z_POS_150ML` | 定时步进 |
+| 150ml | `APP_Z_POS_150ML` | `APP_Z_POS_100ML` | 定时步进 |
+| 100ml | `APP_Z_POS_100ML` | `APP_Z_POS_50ML` | PG4 传感器确认 |
+| 50ml | `APP_Z_POS_50ML` | `APP_Z_POS_BOTTOM` | PG5 传感器确认 |
+
+Z 轴逻辑顺序：
+
+```text
+HOME(PG3) -> 800 -> 700 -> 600 -> 500 -> 400 -> 300 -> 200 -> 150 -> 100(PG4) -> 50(PG5) -> BOTTOM(PG6)
+```
+
+相邻步进时间：
+
+- `APP_Z_STEP_DOWN_MS[i]`：从逻辑位置 `i` 向下到 `i+1`。
+- `APP_Z_STEP_UP_MS[i]`：从逻辑位置 `i+1` 向上到 `i`。
+- 两个时间表都在 `My/app_config.c`，默认先填 `1000ms`，真机调试时必须实测修改。
+
+上电复位和反向保护：
+
+- `APP_POWER_ON_RESET_DOWN_MS`：上电复位开始时先向下运行的时间，默认 `1000ms`。
+- 如果下行过程中触发 PG6，下行立即停止，然后转为上行寻找 PG3。
+- `APP_Z_REVERSE_DEADTIME_MS`：Z 轴从上行切到下行、或从下行切到上行前的空档停顿时间，默认 `300ms`。
+- 反向保护由 MCU 内部自动执行，HMI 不需要新增命令。
 
 自动吸取：
 
@@ -360,7 +384,7 @@ t6.txt="READY" FF FF FF
 
 自动喷淋：
 
-- 第一次：使用目标档位表中的 `first_spray_pg`，表示“吸取位置下一档位置喷淋”。
+- 第一次：使用目标档位表中的 `first_spray_pos`，表示“吸取位置下一档位置喷淋”。
 - 第二次：固定 300ml 位置喷淋。
 - 第三次：固定 800ml 位置喷淋。
 - 三段喷淋共用同一套 6 泵补偿时间，补偿时间在 `My/app_config.c` 的 `APP_SPRAY_PUMP_MS` 中内置。

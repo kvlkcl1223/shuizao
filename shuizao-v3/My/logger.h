@@ -32,7 +32,7 @@ void Logger_Alarm(uint16_t alarm);
 /* 输出带现场上下文的报警日志，便于定位超时或配置问题。 */
 void Logger_AlarmDetail(uint16_t alarm,
                         uint8_t state,
-                        uint8_t target_pg,
+                        uint8_t target_pos,
                         uint16_t pgmask,
                         uint32_t elapsed_ms,
                         uint32_t timeout_ms);
@@ -40,12 +40,13 @@ void Logger_AlarmDetail(uint16_t alarm,
 /* 输出已经解析成功并交给应用层处理的屏幕命令。 */
 void Logger_Command(const Protocol_Command *command);
 
-/* 输出 Z 轴移动目标、当前位置判断、方向和 PG 掩码。 */
-void Logger_Move(uint8_t target_pg,
-                 int8_t current_z_index,
-                 int8_t target_z_index,
+/* 输出 Z 轴相邻步进目标、最终目标、方向和 PG 掩码。 */
+void Logger_Move(uint8_t step_target_pos,
+                 int8_t current_pos,
+                 int8_t final_target_pos,
                  uint8_t direction,
                  uint16_t motor_speed,
+                 uint32_t limit_ms,
                  uint16_t pgmask);
 
 /* 输出自动流程计划摘要。 */
@@ -61,7 +62,7 @@ void Logger_AutoPlan(uint16_t volume_ml,
 void Logger_PhaseStart(const char *tag,
                        uint8_t stage,
                        uint8_t total,
-                       uint8_t target_pg,
+                       uint8_t target_pos,
                        uint32_t duration_ms,
                        uint8_t speed_percent,
                        uint16_t pgmask);

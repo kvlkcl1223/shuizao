@@ -19,6 +19,12 @@
 #define APP_TIME_MAX_MS 600000U
 #define APP_ALL_PUMP_MASK ((uint8_t)((1U << APP_PUMP_COUNT) - 1U))
 
+typedef enum {
+    APP_POWER_RESET_PHASE_NONE = 0,
+    APP_POWER_RESET_PHASE_DOWN,
+    APP_POWER_RESET_PHASE_UP
+} App_PowerResetPhase;
+
 static App_State app_state = APP_STATE_IDLE;
 static App_Alarm app_alarm = APP_ALARM_NONE;
 
@@ -32,18 +38,36 @@ static uint32_t app_aspirate_phase_ms = APP_ASPIRATE_PHASE_MS;
 static uint32_t app_trim10_ms = APP_TRIM_10ML_MS;
 
 /* START 后按体积档位表生成本次自动流程的吸取和喷淋目标。 */
-static PG_ID app_aspirate_sequence[APP_MAX_AUTO_PHASES];
+static App_ZPosition app_aspirate_sequence[APP_MAX_AUTO_PHASES];
 static uint8_t app_aspirate_phase_count = 0U;
-static PG_ID app_spray_sequence[APP_SPRAY_STAGE_COUNT];
+static App_ZPosition app_spray_sequence[APP_SPRAY_STAGE_COUNT];
 static uint8_t app_spray_phase_count = 0U;
 static uint8_t app_has_trim10 = 0U;
 static uint8_t app_spray_active_pump_mask = 0U;
 
 /* 阶段索引用于吸取序列和喷淋序列，切换大阶段时会重新置零。 */
 static uint8_t app_phase_index = 0U;
-static PG_ID app_target_pg = PG_INVALID;
+static App_ZPosition app_current_pos = APP_Z_POS_INVALID;
+static App_ZPosition app_target_pos = APP_Z_POS_INVALID;
+static App_ZPosition app_step_target_pos = APP_Z_POS_INVALID;
+static uint32_t app_step_start_tick = 0U;
+static uint32_t app_step_duration_ms = 0U;
 static uint32_t app_state_start_tick = 0U;
 static uint32_t app_last_screen_tick = 0U;
+
+/* 上电复位分为“先下行”和“再上找 PG3”两个子阶段。 */
+static App_PowerResetPhase app_power_reset_phase = APP_POWER_RESET_PHASE_NONE;
+static uint32_t app_power_reset_start_tick = 0U;
+
+/*
+ * Z 轴反向保护。
+ * 记录上一次真实启动方向；当下一次命令方向相反时，先空档停顿，再启动新方向。
+ */
+static uint8_t app_z_last_direction = MOTOR_STOP;
+static uint8_t app_z_pending_direction = MOTOR_STOP;
+static uint16_t app_z_pending_speed = 0U;
+static bool app_z_reverse_deadtime_active = false;
+static uint32_t app_z_reverse_deadtime_start_tick = 0U;
 
 /* START 命令会先回原点，回原点完成后根据此标志继续自动流程。 */
 static bool app_auto_after_home = false;
@@ -51,7 +75,7 @@ static bool app_auto_after_home = false;
 /* RETURN_HOME 可来自自动完成或 STOP 取消，完成路径才会进入人工补加确认。 */
 static bool app_return_after_success = false;
 
-/* 手动动作记录，用于到达 PG3/PG14 后自动停止。 */
+/* 手动动作记录，用于到达 PG3/PG6 后自动停止。 */
 static Protocol_ManualAction app_manual_z_action = PROTOCOL_MANUAL_ACTION_NONE;
 static Protocol_ManualAction app_manual_pump_action = PROTOCOL_MANUAL_ACTION_NONE;
 
@@ -60,9 +84,101 @@ static uint32_t Now(void)
     return HAL_GetTick();
 }
 
+static void App_Fail(App_Alarm alarm);
+
 static uint32_t Elapsed(uint32_t start_tick)
 {
     return Now() - start_tick;
+}
+
+static bool App_ZPosIsValid(App_ZPosition pos)
+{
+    return pos < APP_Z_POSITION_COUNT;
+}
+
+static uint16_t App_ZPosVolumeMl(App_ZPosition pos)
+{
+    switch (pos) {
+    case APP_Z_POS_800ML:
+        return 800U;
+    case APP_Z_POS_700ML:
+        return 700U;
+    case APP_Z_POS_600ML:
+        return 600U;
+    case APP_Z_POS_500ML:
+        return 500U;
+    case APP_Z_POS_400ML:
+        return 400U;
+    case APP_Z_POS_300ML:
+        return 300U;
+    case APP_Z_POS_200ML:
+        return 200U;
+    case APP_Z_POS_150ML:
+        return 150U;
+    case APP_Z_POS_100ML:
+        return 100U;
+    case APP_Z_POS_50ML:
+        return 50U;
+    default:
+        return 0U;
+    }
+}
+
+static PG_ID App_ZPosSensorPG(App_ZPosition pos)
+{
+    switch (pos) {
+    case APP_Z_POS_HOME:
+        return APP_Z_HOME_PG;
+    case APP_Z_POS_100ML:
+        return APP_Z_100ML_PG;
+    case APP_Z_POS_50ML:
+        return APP_Z_50ML_PG;
+    case APP_Z_POS_BOTTOM:
+        return APP_Z_BOTTOM_PG;
+    default:
+        return PG_INVALID;
+    }
+}
+
+static bool App_ZPosHasSensor(App_ZPosition pos)
+{
+    return PG_IsValid(App_ZPosSensorPG(pos));
+}
+
+static bool App_ZPosSensorActive(App_ZPosition pos)
+{
+    PG_ID pg = App_ZPosSensorPG(pos);
+
+    if (!PG_IsValid(pg)) {
+        return false;
+    }
+
+    return PG_IsActive(pg);
+}
+
+static uint32_t App_ZStepDurationMs(App_ZPosition from, App_ZPosition to)
+{
+    uint8_t index;
+
+    if (!App_ZPosIsValid(from) || !App_ZPosIsValid(to)) {
+        return APP_Z_MOVE_TIMEOUT_MS;
+    }
+
+    if ((uint8_t)to == ((uint8_t)from + 1U)) {
+        index = (uint8_t)from;
+        if (index < APP_Z_STEP_COUNT) {
+            return APP_Z_STEP_DOWN_MS[index];
+        }
+    }
+
+    if ((uint8_t)from == ((uint8_t)to + 1U)) {
+        index = (uint8_t)to;
+        if (index < APP_Z_STEP_COUNT) {
+            return APP_Z_STEP_UP_MS[index];
+        }
+    }
+
+    return APP_Z_MOVE_TIMEOUT_MS;
 }
 
 static uint32_t App_ClampProcessTimeMs(uint32_t time_ms)
@@ -211,19 +327,19 @@ static bool App_BuildAutoPlan(uint16_t volume_ml, uint8_t keep10)
 
     app_aspirate_phase_count = 0U;
     for (uint8_t i = 0U; i <= (uint8_t)base_index; i++) {
-        PG_ID pg = APP_VOLUME_POSITIONS[i].aspirate_pg;
-        if (app_aspirate_phase_count >= APP_MAX_AUTO_PHASES || !PG_IsValid(pg)) {
+        App_ZPosition pos = APP_VOLUME_POSITIONS[i].aspirate_pos;
+        if (app_aspirate_phase_count >= APP_MAX_AUTO_PHASES || !App_ZPosIsValid(pos)) {
             return false;
         }
-        app_aspirate_sequence[app_aspirate_phase_count++] = pg;
+        app_aspirate_sequence[app_aspirate_phase_count++] = pos;
     }
 
     app_spray_phase_count = APP_SPRAY_STAGE_COUNT;
-    app_spray_sequence[0] = APP_VOLUME_POSITIONS[(uint8_t)base_index].first_spray_pg;
-    app_spray_sequence[1] = APP_VOLUME_POSITIONS[(uint8_t)spray2_index].aspirate_pg;
-    app_spray_sequence[2] = APP_VOLUME_POSITIONS[(uint8_t)spray3_index].aspirate_pg;
+    app_spray_sequence[0] = APP_VOLUME_POSITIONS[(uint8_t)base_index].first_spray_pos;
+    app_spray_sequence[1] = APP_VOLUME_POSITIONS[(uint8_t)spray2_index].aspirate_pos;
+    app_spray_sequence[2] = APP_VOLUME_POSITIONS[(uint8_t)spray3_index].aspirate_pos;
     for (uint8_t i = 0U; i < app_spray_phase_count; i++) {
-        if (!PG_IsValid(app_spray_sequence[i])) {
+        if (!App_ZPosIsValid(app_spray_sequence[i])) {
             return false;
         }
     }
@@ -234,12 +350,91 @@ static bool App_BuildAutoPlan(uint16_t volume_ml, uint8_t keep10)
     return app_aspirate_phase_count > 0U;
 }
 
+static bool App_ZDirectionIsRun(uint8_t direction)
+{
+    return direction == APP_Z_UP_DIRECTION || direction == APP_Z_DOWN_DIRECTION;
+}
+
+static bool App_ZDirectionIsReverse(uint8_t first, uint8_t second)
+{
+    return (first == APP_Z_UP_DIRECTION && second == APP_Z_DOWN_DIRECTION) ||
+           (first == APP_Z_DOWN_DIRECTION && second == APP_Z_UP_DIRECTION);
+}
+
+static void App_ZCancelPendingDrive(void)
+{
+    app_z_reverse_deadtime_active = false;
+    app_z_pending_direction = MOTOR_STOP;
+    app_z_pending_speed = 0U;
+}
+
+static void App_ZBrake(void)
+{
+    App_ZCancelPendingDrive();
+    Motor_Brake(APP_Z_MOTOR_ID);
+}
+
+static bool App_ZStartDrive(uint8_t direction, uint16_t speed)
+{
+    if (!App_ZDirectionIsRun(direction) || speed == 0U) {
+        App_ZBrake();
+        return false;
+    }
+
+    if (app_z_reverse_deadtime_active) {
+        app_z_pending_direction = direction;
+        app_z_pending_speed = speed;
+        return false;
+    }
+
+    if (App_ZDirectionIsReverse(app_z_last_direction, direction)) {
+        Motor_Coast(APP_Z_MOTOR_ID);
+        app_z_pending_direction = direction;
+        app_z_pending_speed = speed;
+        app_z_reverse_deadtime_active = true;
+        app_z_reverse_deadtime_start_tick = Now();
+        Logger_Value("MOVE", "reverse_deadtime_ms", APP_Z_REVERSE_DEADTIME_MS);
+        return false;
+    }
+
+    Motor_Run(APP_Z_MOTOR_ID, direction, speed);
+    app_z_last_direction = direction;
+    return true;
+}
+
+static bool App_ZDeadtimeTask(void)
+{
+    if (!app_z_reverse_deadtime_active) {
+        return false;
+    }
+
+    if (Elapsed(app_z_reverse_deadtime_start_tick) < APP_Z_REVERSE_DEADTIME_MS) {
+        return false;
+    }
+
+    if (!App_ZDirectionIsRun(app_z_pending_direction) || app_z_pending_speed == 0U) {
+        App_ZCancelPendingDrive();
+        return false;
+    }
+
+    Motor_Run(APP_Z_MOTOR_ID, app_z_pending_direction, app_z_pending_speed);
+    app_z_last_direction = app_z_pending_direction;
+    App_ZCancelPendingDrive();
+    Logger_Info("MOVE", "reverse_deadtime_done");
+    return true;
+}
+
 static void App_AllStop(void)
 {
     /* 紧急停机共用出口：停全部泵，Z 轴刹车，并清手动动作记录。 */
     Pump_StopAll();
-    Motor_Brake(APP_Z_MOTOR_ID);
+    App_ZBrake();
     app_spray_active_pump_mask = 0U;
+    app_step_target_pos = APP_Z_POS_INVALID;
+    app_step_start_tick = 0U;
+    app_step_duration_ms = 0U;
+    app_power_reset_phase = APP_POWER_RESET_PHASE_NONE;
+    app_power_reset_start_tick = 0U;
     app_manual_z_action = PROTOCOL_MANUAL_ACTION_NONE;
     app_manual_pump_action = PROTOCOL_MANUAL_ACTION_NONE;
 }
@@ -249,58 +444,177 @@ static uint16_t App_ZSpeed(void)
     return Pump_SpeedPercentToMotorSpeed(APP_Z_SPEED_PERCENT);
 }
 
-static void App_StartZMoveTo(PG_ID target)
+static uint32_t App_CurrentStepTimeoutMs(void)
 {
-    int8_t current_index;
-    int8_t target_index;
+    if (app_step_target_pos == APP_Z_POS_HOME) {
+        return APP_HOME_TIMEOUT_MS;
+    }
+
+    if (App_ZPosHasSensor(app_step_target_pos)) {
+        return APP_Z_MOVE_TIMEOUT_MS;
+    }
+
+    return app_step_duration_ms + 500U;
+}
+
+static void App_CompleteZStep(void)
+{
+    App_ZBrake();
+    app_current_pos = app_step_target_pos;
+    app_step_target_pos = APP_Z_POS_INVALID;
+    app_step_start_tick = 0U;
+    app_step_duration_ms = 0U;
+}
+
+static void App_StartNextZStep(void)
+{
+    App_ZPosition from;
+    App_ZPosition to;
     uint8_t direction;
+    uint16_t speed;
 
-    app_target_pg = target;
-    current_index = PG_GetCurrentZIndex();
-    target_index = PG_FindIndexInList(target, APP_Z_ORDER, APP_Z_ORDER_COUNT);
-
-    /* 如果目标 PG 已经有效，说明已经到位，直接刹车即可。 */
-    if (PG_IsActive(target)) {
-        Motor_Brake(APP_Z_MOTOR_ID);
-        Logger_Move(PG_ToNumber(target),
-                    current_index,
-                    target_index,
-                    MOTOR_STOP,
-                    0U,
-                    PG_ReadMask());
+    if (!App_ZPosIsValid(app_target_pos)) {
+        App_ZBrake();
         return;
     }
 
-    /* 根据当前 Z 轴位置和目标在 APP_Z_ORDER 中的相对顺序判断运动方向。 */
-    if (target == APP_Z_HOME_PG) {
-        direction = APP_Z_UP_DIRECTION;
-    } else if (current_index >= 0 && target_index >= 0 && target_index < current_index) {
-        direction = APP_Z_UP_DIRECTION;
-    } else {
-        direction = APP_Z_DOWN_DIRECTION;
+    if (App_ZPosSensorActive(app_target_pos)) {
+        app_current_pos = app_target_pos;
+        app_step_target_pos = APP_Z_POS_INVALID;
+        App_ZBrake();
+        return;
     }
 
-    Logger_Move(PG_ToNumber(target),
-                current_index,
-                target_index,
+    /*
+     * 如果当前位置未知，先向上寻找 HOME。自动流程每次 START 也会先 HOME，
+     * 这样定时位置不会在未知基准上累积误差。
+     */
+    if (!App_ZPosIsValid(app_current_pos)) {
+        from = APP_Z_POS_INVALID;
+        to = APP_Z_POS_HOME;
+        direction = APP_Z_UP_DIRECTION;
+        app_step_duration_ms = APP_HOME_TIMEOUT_MS;
+    } else if (app_current_pos == app_target_pos) {
+        app_step_target_pos = APP_Z_POS_INVALID;
+        App_ZBrake();
+        return;
+    } else if ((uint8_t)app_target_pos > (uint8_t)app_current_pos) {
+        from = app_current_pos;
+        to = (App_ZPosition)((uint8_t)app_current_pos + 1U);
+        direction = APP_Z_DOWN_DIRECTION;
+        app_step_duration_ms = App_ZStepDurationMs(from, to);
+    } else {
+        from = app_current_pos;
+        to = (App_ZPosition)((uint8_t)app_current_pos - 1U);
+        direction = APP_Z_UP_DIRECTION;
+        app_step_duration_ms = App_ZStepDurationMs(from, to);
+    }
+
+    app_step_target_pos = to;
+    app_step_start_tick = 0U;
+    speed = App_ZSpeed();
+
+    Logger_Move((uint8_t)to,
+                (int8_t)app_current_pos,
+                (int8_t)app_target_pos,
                 direction,
-                App_ZSpeed(),
+                speed,
+                App_CurrentStepTimeoutMs(),
                 PG_ReadMask());
-    Motor_Run(APP_Z_MOTOR_ID, direction, App_ZSpeed());
+    if (App_ZStartDrive(direction, speed)) {
+        app_step_start_tick = Now();
+    }
 }
 
-static void App_EnterMoveState(App_State state, PG_ID target)
+static void App_StartZMoveTo(App_ZPosition target)
+{
+    app_target_pos = target;
+    app_step_target_pos = APP_Z_POS_INVALID;
+    app_step_duration_ms = 0U;
+    App_StartNextZStep();
+}
+
+static void App_EnterMoveState(App_State state, App_ZPosition target)
 {
     App_SetState(state);
     App_StartZMoveTo(target);
 }
 
+static void App_StartPowerResetHomeSeek(void)
+{
+    app_power_reset_phase = APP_POWER_RESET_PHASE_UP;
+    app_power_reset_start_tick = 0U;
+    app_current_pos = APP_Z_POS_INVALID;
+    Logger_Info("BOOT", "power_reset_up_seek_home");
+    App_SetState(APP_STATE_POWER_ON_RESET);
+    App_StartZMoveTo(APP_Z_POS_HOME);
+}
+
+static void App_StartPowerResetDown(void)
+{
+    app_alarm = APP_ALARM_NONE;
+    app_auto_after_home = false;
+    app_return_after_success = false;
+    app_phase_index = 0U;
+    app_target_pos = APP_Z_POS_HOME;
+    app_step_target_pos = APP_Z_POS_INVALID;
+    app_step_start_tick = 0U;
+    app_step_duration_ms = 0U;
+    app_current_pos = APP_Z_POS_INVALID;
+    App_SetState(APP_STATE_POWER_ON_RESET);
+
+    if (PG_IsActive(APP_Z_BOTTOM_PG)) {
+        app_current_pos = APP_Z_POS_BOTTOM;
+        Logger_Info("BOOT", "power_reset_bottom_already_active");
+        App_StartPowerResetHomeSeek();
+        return;
+    }
+
+    app_power_reset_phase = APP_POWER_RESET_PHASE_DOWN;
+    app_power_reset_start_tick = 0U;
+    Logger_Value("BOOT", "power_reset_down_ms", APP_POWER_ON_RESET_DOWN_MS);
+    if (App_ZStartDrive(APP_Z_DOWN_DIRECTION, App_ZSpeed())) {
+        app_power_reset_start_tick = Now();
+    }
+}
+
 static bool App_TargetReached(void)
 {
-    /* 目标 PG 低电平有效，到位后立即刹车。 */
-    if (PG_IsActive(app_target_pg)) {
-        Motor_Brake(APP_Z_MOTOR_ID);
+    if (App_ZPosIsValid(app_current_pos) && app_current_pos == app_target_pos) {
+        App_ZBrake();
         return true;
+    }
+
+    if (!App_ZPosIsValid(app_step_target_pos)) {
+        App_StartNextZStep();
+        return false;
+    }
+
+    if (App_ZDeadtimeTask()) {
+        app_step_start_tick = Now();
+    }
+
+    if (app_step_start_tick == 0U) {
+        return false;
+    }
+
+    if (App_ZPosHasSensor(app_step_target_pos)) {
+        if (App_ZPosSensorActive(app_step_target_pos)) {
+            App_CompleteZStep();
+            if (app_current_pos == app_target_pos) {
+                return true;
+            }
+            App_StartNextZStep();
+        }
+        return false;
+    }
+
+    if (Elapsed(app_step_start_tick) >= app_step_duration_ms) {
+        App_CompleteZStep();
+        if (app_current_pos == app_target_pos) {
+            return true;
+        }
+        App_StartNextZStep();
     }
 
     return false;
@@ -308,29 +622,73 @@ static bool App_TargetReached(void)
 
 static bool App_MoveTimedOut(void)
 {
-    uint32_t timeout;
-
-    /* 回原点通常距离可能更长，使用单独超时时间。 */
-    if (app_target_pg == APP_Z_HOME_PG) {
-        timeout = APP_HOME_TIMEOUT_MS;
-    } else {
-        timeout = APP_Z_MOVE_TIMEOUT_MS;
+    if (!App_ZPosIsValid(app_step_target_pos)) {
+        return false;
     }
 
-    return Elapsed(app_state_start_tick) > timeout;
+    if (app_step_start_tick == 0U) {
+        return false;
+    }
+
+    return Elapsed(app_step_start_tick) > App_CurrentStepTimeoutMs();
 }
 
 static uint32_t App_MoveTimeoutLimitMs(void)
 {
-    if (app_target_pg == APP_Z_HOME_PG) {
-        return APP_HOME_TIMEOUT_MS;
+    return App_CurrentStepTimeoutMs();
+}
+
+static void App_TaskPowerOnReset(void)
+{
+    if (app_power_reset_phase == APP_POWER_RESET_PHASE_DOWN) {
+        if (App_ZDeadtimeTask()) {
+            app_power_reset_start_tick = Now();
+        }
+
+        if (app_power_reset_start_tick == 0U) {
+            return;
+        }
+
+        if (PG_IsActive(APP_Z_BOTTOM_PG)) {
+            App_ZBrake();
+            app_current_pos = APP_Z_POS_BOTTOM;
+            Logger_Info("BOOT", "power_reset_down_stop reason=BOTTOM_PG");
+            App_StartPowerResetHomeSeek();
+            return;
+        }
+
+        if (Elapsed(app_power_reset_start_tick) >= APP_POWER_ON_RESET_DOWN_MS) {
+            App_ZBrake();
+            Logger_Info("BOOT", "power_reset_down_stop reason=TIME_DONE");
+            App_StartPowerResetHomeSeek();
+        }
+        return;
     }
 
-    return APP_Z_MOVE_TIMEOUT_MS;
+    if (App_TargetReached()) {
+        app_power_reset_phase = APP_POWER_RESET_PHASE_NONE;
+        app_auto_after_home = false;
+        app_return_after_success = false;
+        App_AllStop();
+        Logger_Info("BOOT", "power_home_reached");
+        App_SetState(APP_STATE_IDLE);
+        Screen_ShowMessage("READY");
+    } else if (App_MoveTimedOut()) {
+        App_Fail(APP_ALARM_Z_TIMEOUT);
+    }
 }
 
 static void App_Fail(App_Alarm alarm)
 {
+    App_ZPosition alarm_target_pos = app_target_pos;
+    uint32_t alarm_elapsed_ms = Elapsed(app_state_start_tick);
+    uint32_t alarm_timeout_ms = App_MoveTimeoutLimitMs();
+
+    if (App_ZPosIsValid(app_step_target_pos)) {
+        alarm_target_pos = app_step_target_pos;
+        alarm_elapsed_ms = Elapsed(app_step_start_tick);
+    }
+
     /* 故障时立即停止所有执行机构，并把报警码同步到屏幕。 */
     app_alarm = alarm;
     app_auto_after_home = false;
@@ -338,10 +696,10 @@ static void App_Fail(App_Alarm alarm)
     App_AllStop();
     Logger_AlarmDetail((uint16_t)alarm,
                        (uint8_t)app_state,
-                       PG_ToNumber(app_target_pg),
+                       (uint8_t)alarm_target_pos,
                        PG_ReadMask(),
-                       Elapsed(app_state_start_tick),
-                       App_MoveTimeoutLimitMs());
+                       alarm_elapsed_ms,
+                       alarm_timeout_ms);
     Screen_ShowAlarm((uint16_t)alarm);
     Screen_ShowMessage("ERROR");
     App_SetState(APP_STATE_ERROR);
@@ -458,6 +816,7 @@ static void App_StartAuto(uint16_t volume_ml, uint8_t keep10)
     app_auto_after_home = true;
     app_return_after_success = false;
     App_AllStop();
+    app_current_pos = APP_Z_POS_INVALID;
     Logger_AutoPlan(volume_ml,
                     (uint16_t)(volume_ml - reserved_ml),
                     reserved_ml,
@@ -465,7 +824,7 @@ static void App_StartAuto(uint16_t volume_ml, uint8_t keep10)
                     app_spray_phase_count,
                     app_has_trim10,
                     app_pump_speed_percent);
-    App_EnterMoveState(APP_STATE_HOMING, APP_Z_HOME_PG);
+    App_EnterMoveState(APP_STATE_HOMING, APP_Z_POS_HOME);
     App_ReportStatus(true);
 }
 
@@ -477,8 +836,9 @@ static void App_StartHome(bool continue_auto)
     app_return_after_success = false;
     app_phase_index = 0U;
     Pump_StopAll();
+    app_current_pos = APP_Z_POS_INVALID;
     Logger_Value("HOME", "continue_auto", continue_auto ? 1U : 0U);
-    App_EnterMoveState(APP_STATE_HOMING, APP_Z_HOME_PG);
+    App_EnterMoveState(APP_STATE_HOMING, APP_Z_POS_HOME);
 }
 
 static void App_HandleManual(const Protocol_Command *command)
@@ -505,18 +865,20 @@ static void App_HandleManual(const Protocol_Command *command)
             Pump_StopAll();
             app_manual_pump_action = PROTOCOL_MANUAL_ACTION_NONE;
             app_manual_z_action = PROTOCOL_MANUAL_ACTION_UP;
+            app_current_pos = APP_Z_POS_INVALID;
             Logger_Value("MAN", "z_up_speed", speed);
-            Motor_Run(APP_Z_MOTOR_ID, APP_Z_UP_DIRECTION, Pump_SpeedPercentToMotorSpeed(speed));
+            (void)App_ZStartDrive(APP_Z_UP_DIRECTION, Pump_SpeedPercentToMotorSpeed(speed));
             App_SetState(APP_STATE_MANUAL);
         } else if (command->manual_action == PROTOCOL_MANUAL_ACTION_DOWN) {
             Pump_StopAll();
             app_manual_pump_action = PROTOCOL_MANUAL_ACTION_NONE;
             app_manual_z_action = PROTOCOL_MANUAL_ACTION_DOWN;
+            app_current_pos = APP_Z_POS_INVALID;
             Logger_Value("MAN", "z_down_speed", speed);
-            Motor_Run(APP_Z_MOTOR_ID, APP_Z_DOWN_DIRECTION, Pump_SpeedPercentToMotorSpeed(speed));
+            (void)App_ZStartDrive(APP_Z_DOWN_DIRECTION, Pump_SpeedPercentToMotorSpeed(speed));
             App_SetState(APP_STATE_MANUAL);
         } else if (command->manual_action == PROTOCOL_MANUAL_ACTION_STOP) {
-            Motor_Brake(APP_Z_MOTOR_ID);
+            App_ZBrake();
             app_manual_z_action = PROTOCOL_MANUAL_ACTION_NONE;
             Logger_Info("MAN", "z_stop");
             if (app_manual_pump_action == PROTOCOL_MANUAL_ACTION_NONE) {
@@ -525,14 +887,14 @@ static void App_HandleManual(const Protocol_Command *command)
         }
     } else if (command->manual_target == PROTOCOL_MANUAL_TARGET_PUMP) {
         if (command->manual_action == PROTOCOL_MANUAL_ACTION_IN) {
-            Motor_Brake(APP_Z_MOTOR_ID);
+            App_ZBrake();
             app_manual_z_action = PROTOCOL_MANUAL_ACTION_NONE;
             app_manual_pump_action = PROTOCOL_MANUAL_ACTION_IN;
             Logger_Value("MAN", "pump_in_speed", speed);
             Pump_RunAll(PUMP_DIR_IN, speed);
             App_SetState(APP_STATE_MANUAL);
         } else if (command->manual_action == PROTOCOL_MANUAL_ACTION_OUT) {
-            Motor_Brake(APP_Z_MOTOR_ID);
+            App_ZBrake();
             app_manual_z_action = PROTOCOL_MANUAL_ACTION_NONE;
             app_manual_pump_action = PROTOCOL_MANUAL_ACTION_OUT;
             Logger_Value("MAN", "pump_out_speed", speed);
@@ -600,15 +962,16 @@ static void App_HandleCommand(const Protocol_Command *command)
         App_AllStop();
         app_auto_after_home = false;
         app_return_after_success = false;
+        app_current_pos = APP_Z_POS_INVALID;
         Logger_Info("CMD", "stop_handled");
         /* STOP 在自动流程中按“停止后回原点”处理；人工补加等待中则直接取消。 */
         if (app_state == APP_STATE_POWER_ON_RESET) {
-            App_EnterMoveState(APP_STATE_POWER_ON_RESET, APP_Z_HOME_PG);
+            App_StartPowerResetHomeSeek();
         } else if (app_state == APP_STATE_WAIT_MANUAL_CUP_CLEAN) {
             app_manual_reserved_ml = 0U;
             App_SetState(APP_STATE_IDLE);
         } else if (App_IsAutoRunning()) {
-            App_EnterMoveState(APP_STATE_RETURN_HOME, APP_Z_HOME_PG);
+            App_EnterMoveState(APP_STATE_RETURN_HOME, APP_Z_POS_HOME);
         } else {
             App_SetState(APP_STATE_IDLE);
         }
@@ -619,6 +982,7 @@ static void App_HandleCommand(const Protocol_Command *command)
         App_AllStop();
         app_auto_after_home = false;
         app_return_after_success = false;
+        app_current_pos = APP_Z_POS_INVALID;
         app_alarm = APP_ALARM_NONE;
         Logger_Info("CMD", "estop_handled");
         App_SetState(APP_STATE_ESTOP);
@@ -685,16 +1049,20 @@ static void App_ProcessCommands(void)
 
 static void App_TaskManual(void)
 {
-    /* 手动上升/下降分别用 PG3/PG14 做软限位。 */
+    (void)App_ZDeadtimeTask();
+
+    /* 手动上升/下降分别用 PG3/PG6 做软限位。 */
     if (app_manual_z_action == PROTOCOL_MANUAL_ACTION_UP &&
         PG_IsActive(APP_Z_HOME_PG)) {
-        Motor_Brake(APP_Z_MOTOR_ID);
+        App_ZBrake();
         app_manual_z_action = PROTOCOL_MANUAL_ACTION_NONE;
+        app_current_pos = APP_Z_POS_HOME;
         Screen_ShowMessage("Z HOME");
     } else if (app_manual_z_action == PROTOCOL_MANUAL_ACTION_DOWN &&
                PG_IsActive(APP_Z_BOTTOM_PG)) {
-        Motor_Brake(APP_Z_MOTOR_ID);
+        App_ZBrake();
         app_manual_z_action = PROTOCOL_MANUAL_ACTION_NONE;
+        app_current_pos = APP_Z_POS_BOTTOM;
         Screen_ShowMessage("Z BOTTOM");
     }
 
@@ -718,7 +1086,7 @@ static void App_StartSprayPumps(void)
     Logger_PhaseStart("SPRAY",
                       (uint8_t)(app_phase_index + 1U),
                       app_spray_phase_count,
-                      PG_ToNumber(app_spray_sequence[app_phase_index]),
+                      (uint8_t)app_spray_sequence[app_phase_index],
                       App_GetSprayMaxMs(),
                       app_pump_speed_percent,
                       PG_ReadMask());
@@ -753,7 +1121,7 @@ static void App_AdvanceSprayPhase(void)
         /* 自动喷淋结束后必须回原点。 */
         app_return_after_success = true;
         Logger_Info("SPRAY", "sequence_done");
-        App_EnterMoveState(APP_STATE_RETURN_HOME, APP_Z_HOME_PG);
+        App_EnterMoveState(APP_STATE_RETURN_HOME, APP_Z_POS_HOME);
     }
 }
 
@@ -799,16 +1167,7 @@ static void App_TaskAuto(void)
         break;
 
     case APP_STATE_POWER_ON_RESET:
-        if (App_TargetReached()) {
-            app_auto_after_home = false;
-            app_return_after_success = false;
-            App_AllStop();
-            Logger_Info("BOOT", "power_home_reached");
-            App_SetState(APP_STATE_IDLE);
-            Screen_ShowMessage("READY");
-        } else if (App_MoveTimedOut()) {
-            App_Fail(APP_ALARM_Z_TIMEOUT);
-        }
+        App_TaskPowerOnReset();
         break;
 
     case APP_STATE_CHECK_Y:
@@ -829,7 +1188,7 @@ static void App_TaskAuto(void)
             Logger_PhaseStart("ASP",
                               (uint8_t)(app_phase_index + 1U),
                               app_aspirate_phase_count,
-                              PG_ToNumber(app_aspirate_sequence[app_phase_index]),
+                              (uint8_t)app_aspirate_sequence[app_phase_index],
                               app_aspirate_phase_ms,
                               app_pump_speed_percent,
                               PG_ReadMask());
@@ -857,7 +1216,7 @@ static void App_TaskAuto(void)
                 Logger_PhaseStart("TRIM10",
                                   (uint8_t)(app_aspirate_phase_count + 1U),
                                   (uint8_t)(app_aspirate_phase_count + 1U),
-                                  PG_ToNumber(app_target_pg),
+                                  (uint8_t)app_target_pos,
                                   app_trim10_ms,
                                   app_pump_speed_percent,
                                   PG_ReadMask());
@@ -951,9 +1310,9 @@ void App_Init(void)
     App_AllStop();
 
 #if APP_POWER_ON_RESET_ENABLE
-    /* 上电后先复位到最高点。最高点由 APP_Z_HOME_PG 配置，当前默认 PG3。 */
-    Logger_Info("BOOT", "power_home_start");
-    App_EnterMoveState(APP_STATE_POWER_ON_RESET, APP_Z_HOME_PG);
+    /* 上电后先短时下行，再上行寻找最高点。最高点由 APP_Z_HOME_PG 配置，当前默认 PG3。 */
+    Logger_Info("BOOT", "power_reset_start");
+    App_StartPowerResetDown();
 #else
     App_SetState(APP_STATE_IDLE);
 #endif

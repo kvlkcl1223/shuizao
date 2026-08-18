@@ -1,0 +1,87 @@
+#include "screen.h"
+#include "app_config.h"
+#include "usart.h"
+#include <stdio.h>
+#include <string.h>
+
+/*
+ * screen.c
+ * 串口屏输出实现。
+ * 所有命令通过 USART3 发送，并自动补齐陶晶驰要求的三个 0xFF 结束符。
+ */
+
+static void Screen_SendEnd(void)
+{
+    /* 陶晶驰/Nextion 指令结束符固定为三个 0xFF。 */
+    uint8_t end_bytes[3] = {0xFF, 0xFF, 0xFF};
+    HAL_UART_Transmit(&huart3, end_bytes, sizeof(end_bytes), 100U);
+}
+
+void Screen_Init(void)
+{
+    Screen_ShowMessage("READY");
+}
+
+void Screen_Command(const char *command)
+{
+    if (command == 0) {
+        return;
+    }
+
+    /* 所有屏幕输出走 USART3，与协议接收使用同一个串口。 */
+    HAL_UART_Transmit(&huart3, (uint8_t *)command, strlen(command), 100U);
+    Screen_SendEnd();
+}
+
+void Screen_SetText(const char *object_name, const char *text)
+{
+    char buffer[96];
+
+    if (object_name == 0 || text == 0) {
+        return;
+    }
+
+    /* 文本内容目前使用 ASCII 状态词；中文推荐在屏幕工程里根据状态码显示。 */
+    sprintf(buffer, "%s.txt=\"%s\"", object_name, text);
+    Screen_Command(buffer);
+}
+
+void Screen_SetValue(const char *object_name, int32_t value)
+{
+    char buffer[48];
+
+    if (object_name == 0) {
+        return;
+    }
+
+    sprintf(buffer, "%s.val=%ld", object_name, (long)value);
+    Screen_Command(buffer);
+}
+
+void Screen_ShowMessage(const char *text)
+{
+    Screen_SetText(APP_SCREEN_MESSAGE_OBJ, text);
+}
+
+void Screen_ShowAlarm(uint16_t alarm_code)
+{
+    Screen_SetValue(APP_SCREEN_ALARM_OBJ, alarm_code);
+}
+
+void Screen_UpdateStatus(uint8_t state,
+                         uint8_t phase,
+                         uint8_t speed_percent,
+                         uint16_t pg_mask,
+                         uint8_t keep10,
+                         uint16_t alarm_code,
+                         uint8_t progress_percent)
+{
+    /* 批量更新屏幕数值控件，控件名集中在 app_config.h 中配置。 */
+    Screen_SetValue(APP_SCREEN_STATE_OBJ, state);
+    Screen_SetValue(APP_SCREEN_PHASE_OBJ, phase);
+    Screen_SetValue(APP_SCREEN_SPEED_OBJ, speed_percent);
+    Screen_SetValue(APP_SCREEN_PGMASK_OBJ, pg_mask);
+    Screen_SetValue(APP_SCREEN_KEEP10_OBJ, keep10);
+    Screen_SetValue(APP_SCREEN_ALARM_OBJ, alarm_code);
+    Screen_SetValue(APP_SCREEN_PROGRESS_OBJ, progress_percent);
+}

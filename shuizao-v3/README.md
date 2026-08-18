@@ -1,6 +1,6 @@
-# 水藻自动化设备 v2 固件说明
+# 水藻自动化设备 v3 固件说明
 
-本文档说明 `shuizao-v2` 当前固件的自动化流程、手动流程，以及真机调试时最需要修改和确认的位置。
+本文档说明 `shuizao-v3` 当前固件的自动化流程、手动流程，以及真机调试时最需要修改和确认的位置。
 
 更完整的串口通信协议见：
 
@@ -8,7 +8,7 @@
 
 ## 1. 当前版本范围
 
-当前 `v2` 固件已经去掉 `v1` 中的单泵校准和参数保存逻辑，改为围绕陶晶驰串口屏、16 路光电位置传感器、Z 轴和 6 路蠕动泵实现自动流程。
+当前 `v3` 固件沿用 v2 的陶晶驰串口屏协议、自动流程、手动流程、USART2 日志和 LED1 生命灯，但 Z 轴位置检测改为 4 个真实传感器加定时步进虚拟位置。
 
 当前约定：
 
@@ -18,8 +18,9 @@
 - 屏幕发给 MCU 的命令格式为 `#命令,参数;`。
 - MCU 给屏幕写陶晶驰/Nextion 原生命令，自动追加 `0xFF 0xFF 0xFF`。
 - PG1 和 PG2 属于 Y 轴位置检测，目前默认只使用 PG1 作为允许工作位置。
-- PG3 到 PG14 属于 Z 轴位置检测。
-- PG15 和 PG16 备用。
+- Z 轴只使用 4 个真实传感器：PG3 上限/原点，PG4 100ml，PG5 50ml，PG6 下限/底部。
+- 800/700/600/500/400/300/200/150ml 这些位置靠相邻位置定时步进到达。
+- PG7 到 PG16 当前不参与 Z 轴定位。
 - 所有 PG 低电平有效。
 - 第 1 路 DRV8870 控制 Z 轴。
 - 第 2 到第 7 路 DRV8870 控制 6 路蠕动泵。
@@ -28,7 +29,7 @@
 - 泵速可通过屏幕设置，范围为 10% 到 100%。
 - 参数不保存，MCU 复位或断电后恢复默认值。
 - 上电后默认自动复位到最高点，当前最高点为 PG3；屏幕发送 `#RESET;` 软件复位后也会执行同样的上电复位。
-- v2 当前不做校准流程。
+- v3 当前不做校准流程，定时步进参数需要真机实测后写入 `My/app_config.c`。
 
 ## 2. 代码模块分工
 
@@ -67,16 +68,20 @@ MCU 每次上电或执行 `#RESET;` 软件复位后，会自动进入上电复�
 2. 启动 USART2 调试日志。
 3. 启动 TIM5 定时中断，LED1 作为生命灯按 `APP_LED1_HEARTBEAT_TIM5_TICKS` 分频翻转。
 4. 停止全部蠕动泵，Z 轴刹车。
-5. Z 轴向最高点运动。
-6. 当前默认最高点为 PG3，即 `APP_Z_HOME_PG`。
-7. PG3 触发后停止，状态进入 `IDLE`。
-8. 如果超过 `APP_HOME_TIMEOUT_MS` 仍未触发 PG3，进入 `ERROR` 并报 `Z_TIMEOUT`。
+5. Z 轴先向下运行 `APP_POWER_ON_RESET_DOWN_MS`。
+6. 如果下行过程中提前触发下限位 `APP_Z_BOTTOM_PG`，立即停止下行。
+7. 下行结束后，Z 轴先进入 `APP_Z_REVERSE_DEADTIME_MS` 空档停顿，再向最高点运动。
+8. 当前默认最高点为 PG3，即 `APP_Z_HOME_PG`。
+9. PG3 触发后停止，状态进入 `IDLE`。
+10. 如果超过 `APP_HOME_TIMEOUT_MS` 仍未触发 PG3，进入 `ERROR` 并报 `Z_TIMEOUT`。
 
 上电复位过程中：
 
 - `#START;`、`#MAN;`、`#SET;` 会被当作忙碌状态拒绝。
-- `#STOP;` 不取消复位，会继续回最高点。
+- `#STOP;` 不取消复位；若处于下行阶段，会停止下行并继续上行寻找 PG3。
 - `#ESTOP;` 仍然立即停机。
+
+Z 轴所有可能从上行切到下行、或从下行切到上行的动作，都会先空档停顿 `APP_Z_REVERSE_DEADTIME_MS`，避免驱动芯片直接正反转切换。
 
 屏幕通过下面命令启动自动流程：
 
@@ -106,7 +111,7 @@ MCU 每次上电或执行 `#RESET;` 软件复位后，会自动进入上电复�
 3. 根据 `My/app_config.c` 的体积档位表生成本次吸取和喷淋计划。
 4. Z 轴先回原点，当前默认原点为 PG3。
 5. 检查 Y 轴是否在允许工作位置，当前默认要求 PG1 有效。
-6. 按体积档位从高液位到目标档位逐级移动。
+6. 按体积档位从高液位到目标档位逐级移动；虚拟体积位置靠相邻步进定时到达，100ml/50ml 用 PG4/PG5 确认。
 7. 每到一个吸取档位，6 路蠕动泵按吸取方向运行固定时间。
 8. 如果启用预留 10ml，执行一次定时补吸。
 9. 执行三段喷淋。
@@ -120,25 +125,25 @@ MCU 每次上电或执行 `#RESET;` 软件复位后，会自动进入上电复�
 
 当前默认映射：
 
-| 体积 | 吸取 PG | 第一次喷淋 PG | 说明 |
+| 体积 | 吸取逻辑位置 | 第一次喷淋逻辑位置 | 到位方式 |
 |---:|---|---|---|
-| 800ml | PG4 | PG5 | 停一段时间 |
-| 700ml | PG5 | PG6 | 停一段时间 |
-| 600ml | PG6 | PG7 | 停一段时间 |
-| 500ml | PG7 | PG8 | 停一段时间 |
-| 400ml | PG8 | PG9 | 停一段时间 |
-| 300ml | PG9 | PG10 | 停一段时间 |
-| 200ml | PG10 | PG11 | 含定位吸取 |
-| 150ml | PG11 | PG12 | 含定位吸取 |
-| 100ml | PG12 | PG13 | 含定位吸取 |
-| 50ml | PG13 | PG14 | 定位吸取 |
+| 800ml | `APP_Z_POS_800ML` | `APP_Z_POS_700ML` | 定时步进 |
+| 700ml | `APP_Z_POS_700ML` | `APP_Z_POS_600ML` | 定时步进 |
+| 600ml | `APP_Z_POS_600ML` | `APP_Z_POS_500ML` | 定时步进 |
+| 500ml | `APP_Z_POS_500ML` | `APP_Z_POS_400ML` | 定时步进 |
+| 400ml | `APP_Z_POS_400ML` | `APP_Z_POS_300ML` | 定时步进 |
+| 300ml | `APP_Z_POS_300ML` | `APP_Z_POS_200ML` | 定时步进 |
+| 200ml | `APP_Z_POS_200ML` | `APP_Z_POS_150ML` | 定时步进 |
+| 150ml | `APP_Z_POS_150ML` | `APP_Z_POS_100ML` | 定时步进 |
+| 100ml | `APP_Z_POS_100ML` | `APP_Z_POS_50ML` | PG4 传感器确认 |
+| 50ml | `APP_Z_POS_50ML` | `APP_Z_POS_BOTTOM` | PG5 传感器确认 |
 
 注意：
 
-- PG3 当前作为原点/最高定点，不参与体积吸取档位。
-- PG14 当前作为 Z 轴底部。
-- 50ml 和 100ml 当前不共用传感器；100ml 默认 PG12，50ml 默认 PG13。
-- 光电顺序不确定时，优先修改 `APP_Z_ORDER` 和 `APP_VOLUME_POSITIONS`，不要先改状态机。
+- PG3 当前作为上限/原点，不参与体积吸取档位。
+- PG6 当前作为 Z 轴下限/底部。
+- 100ml 默认 PG4，50ml 默认 PG5。
+- 800ml 到 150ml 没有独立传感器，靠 `APP_Z_STEP_DOWN_MS` 和 `APP_Z_STEP_UP_MS` 相邻步进时间到达。
 
 ### 3.3 分阶段吸取逻辑
 
@@ -154,12 +159,12 @@ MCU 每次上电或执行 `#RESET;` 软件复位后，会自动进入上电复�
 
 1. 回原点 PG3。
 2. 检查 PG1。
-3. 到 800ml 档 PG4，吸取固定时间。
-4. 到 700ml 档 PG5，吸取固定时间。
-5. 到 600ml 档 PG6，吸取固定时间。
-6. 到 500ml 档 PG7，吸取固定时间。
-7. 到 400ml 档 PG8，吸取固定时间。
-8. 到 300ml 档 PG9，吸取固定时间。
+3. 从 HOME 向下定时步进到 800ml，吸取固定时间。
+4. 定时步进到 700ml，吸取固定时间。
+5. 定时步进到 600ml，吸取固定时间。
+6. 定时步进到 500ml，吸取固定时间。
+7. 定时步进到 400ml，吸取固定时间。
+8. 定时步进到 300ml，吸取固定时间。
 9. 停止吸取，进入喷淋流程。
 
 每个吸取阶段使用同一个时间：
@@ -214,7 +219,7 @@ MCU 每次上电或执行 `#RESET;` 软件复位后，会自动进入上电复�
 2. 第二次：固定到 300ml 位置喷淋。
 3. 第三次：固定到 800ml 位置喷淋。
 
-当前第一次喷淋位置由 `APP_VOLUME_POSITIONS` 表中的 `first_spray_pg` 决定，而不是在代码里临时计算。这样现场传感器顺序变化时，可以直接改表。
+当前第一次喷淋位置由 `APP_VOLUME_POSITIONS` 表中的 `first_spray_pos` 决定，而不是在代码里临时计算。由于 v3 多数位置是定时虚拟位置，现场主要调整相邻步进时间表。
 
 当前固定喷淋体积：
 
@@ -272,7 +277,7 @@ MCU 每次上电或执行 `#RESET;` 软件复位后，会自动进入上电复�
 当前保护：
 
 - 上升到 PG3 自动停止。
-- 下降到 PG14 自动停止。
+- 下降到 PG6 自动停止。
 - 速度参数仍按百分比处理，低于 10% 会夹到 10%。
 
 陶晶驰按钮建议：
@@ -404,7 +409,7 @@ MCU 默认写这些控件名，定义在 `My/app_config.h`：
 
 这一节是现场调试的重点。先按优先级改这些位置，不要一上来改状态机。
 
-### 8.1 修改 PG 物理顺序
+### 8.1 修改 Z 轴真实传感器映射
 
 文件：
 
@@ -418,24 +423,42 @@ const PG_ID APP_Z_ORDER[] = {
     PG_4,
     PG_5,
     PG_6,
-    PG_7,
-    PG_8,
-    PG_9,
-    PG_10,
-    PG_11,
-    PG_12,
-    PG_13,
-    PG_14,
 };
 ```
 
 作用：
 
-- 告诉固件 Z 轴从上到下经过哪些 PG。
-- 状态机根据这个表判断应该上升还是下降。
-- 如果现场发现 PG 顺序和默认不同，先改这里。
+- 告诉固件 Z 轴从上到下有哪些真实传感器。
+- 当前固定为 PG3 上限、PG4 100ml、PG5 50ml、PG6 下限。
+- 如果 PCB 接线变化，先改 `APP_Z_HOME_PG`、`APP_Z_100ML_PG`、`APP_Z_50ML_PG`、`APP_Z_BOTTOM_PG` 和这个顺序表。
 
-### 8.2 修改体积档位和第一次喷淋位置
+### 8.2 修改 Z 轴相邻步进时间
+
+文件：
+
+- `My/app_config.c`
+
+重点修改：
+
+```c
+const uint32_t APP_Z_STEP_DOWN_MS[APP_Z_STEP_COUNT] = {
+    APP_Z_STEP_DEFAULT_MS, /* HOME -> 800 */
+    APP_Z_STEP_DEFAULT_MS, /* 800  -> 700 */
+    APP_Z_STEP_DEFAULT_MS, /* 700  -> 600 */
+    APP_Z_STEP_DEFAULT_MS, /* 600  -> 500 */
+    APP_Z_STEP_DEFAULT_MS, /* 500  -> 400 */
+    APP_Z_STEP_DEFAULT_MS, /* 400  -> 300 */
+    APP_Z_STEP_DEFAULT_MS, /* 300  -> 200 */
+    APP_Z_STEP_DEFAULT_MS, /* 200  -> 150 */
+    APP_Z_STEP_DEFAULT_MS, /* 150  -> 100 */
+    APP_Z_STEP_DEFAULT_MS, /* 100  -> 50 */
+    APP_Z_STEP_DEFAULT_MS, /* 50   -> BOTTOM */
+};
+```
+
+`APP_Z_STEP_UP_MS` 是反方向时间表，建议单独实测，不要直接复制下行时间。
+
+### 8.3 修改体积档位和第一次喷淋位置
 
 文件：
 
@@ -445,35 +468,33 @@ const PG_ID APP_Z_ORDER[] = {
 
 ```c
 const App_VolumePosition APP_VOLUME_POSITIONS[] = {
-    {800U, PG_4,  PG_5,  0U},
-    {700U, PG_5,  PG_6,  0U},
-    {600U, PG_6,  PG_7,  0U},
-    {500U, PG_7,  PG_8,  0U},
-    {400U, PG_8,  PG_9,  0U},
-    {300U, PG_9,  PG_10, 0U},
-    {200U, PG_10, PG_11, 1U},
-    {150U, PG_11, PG_12, 1U},
-    {100U, PG_12, PG_13, 1U},
-    {50U,  PG_13, PG_14, 1U},
+    {800U, APP_Z_POS_800ML, APP_Z_POS_700ML, 0U},
+    {700U, APP_Z_POS_700ML, APP_Z_POS_600ML, 0U},
+    {600U, APP_Z_POS_600ML, APP_Z_POS_500ML, 0U},
+    {500U, APP_Z_POS_500ML, APP_Z_POS_400ML, 0U},
+    {400U, APP_Z_POS_400ML, APP_Z_POS_300ML, 0U},
+    {300U, APP_Z_POS_300ML, APP_Z_POS_200ML, 0U},
+    {200U, APP_Z_POS_200ML, APP_Z_POS_150ML, 1U},
+    {150U, APP_Z_POS_150ML, APP_Z_POS_100ML, 1U},
+    {100U, APP_Z_POS_100ML, APP_Z_POS_50ML,  1U},
+    {50U,  APP_Z_POS_50ML,  APP_Z_POS_BOTTOM, 1U},
 };
 ```
 
 每行含义：
 
 ```c
-{体积ml, 吸取PG, 第一次喷淋PG, 是否定位吸取}
+{体积ml, 吸取逻辑位置, 第一次喷淋逻辑位置, 是否定位吸取}
 ```
 
 现场最可能要改：
 
-- 800ml 到 50ml 对应哪个 PG。
-- 50ml 和 100ml 分别对应哪个 PG。
-- 第一次喷淋到底应该去目标下一档的哪个 PG。
+- 第一次喷淋到底应该去目标下一档的哪个逻辑位置。
 - 200ml、150ml、100ml、50ml 的定位吸取标志是否还需要保留。
 
 当前 `precise_aspirate` 字段已经预留，但状态机暂时没有为它做独立动作。后续如果要让“定位吸取”和“停一段时间吸取”有不同行为，就从这个字段扩展。
 
-### 8.3 修改固定喷淋体积
+### 8.4 修改固定喷淋体积
 
 文件：
 
@@ -493,7 +514,7 @@ const uint16_t APP_SPRAY_FIXED_VOLUME_STAGE3_ML = 800U;
 
 如果真实工艺调整为其他固定喷淋点，只改这里即可。
 
-### 8.4 修改 Y 轴允许工作位置
+### 8.5 修改 Y 轴允许工作位置
 
 文件：
 
@@ -507,7 +528,7 @@ const PG_ID APP_Y_READY_PG = PG_1;
 
 当前默认 PG1 有效才允许自动流程继续。如果现场确认应该用 PG2，或未来 Y 轴需要更多位置判断，就从这里扩展。
 
-### 8.5 修改 Z 轴原点和底部
+### 8.6 修改 Z 轴原点和底部
 
 文件：
 
@@ -518,12 +539,16 @@ const PG_ID APP_Y_READY_PG = PG_1;
 
 ```c
 const PG_ID APP_Z_HOME_PG = PG_3;
-const PG_ID APP_Z_BOTTOM_PG = PG_14;
+const PG_ID APP_Z_100ML_PG = PG_4;
+const PG_ID APP_Z_50ML_PG = PG_5;
+const PG_ID APP_Z_BOTTOM_PG = PG_6;
 ```
 
 作用：
 
 - `APP_Z_HOME_PG` 用于上电复位目标、自动回原点、手动上升限位。
+- `APP_Z_100ML_PG` 用于 100ml 逻辑位置确认。
+- `APP_Z_50ML_PG` 用于 50ml 逻辑位置确认。
 - `APP_Z_BOTTOM_PG` 用于手动下降限位。
 
 上电复位开关在 `My/app_config.h`：
@@ -534,7 +559,7 @@ const PG_ID APP_Z_BOTTOM_PG = PG_14;
 
 如果临时不想上电自动回最高点，可改为 `0U`；正常真机版本建议保持 `1U`。
 
-### 8.6 修改电机分配和方向
+### 8.7 修改电机分配和方向
 
 文件：
 
@@ -566,7 +591,7 @@ const uint8_t APP_PUMP_OUT_DIRECTION = MOTOR_REVERSE;
 - 如果泵吸取按钮实际在排出，交换 `APP_PUMP_IN_DIRECTION` 和 `APP_PUMP_OUT_DIRECTION`。
 - 如果电机接线编号变了，改 `APP_Z_MOTOR_ID` 或 `APP_PUMP_MOTOR_IDS`。
 
-### 8.7 修改默认速度、时间和超时
+### 8.8 修改默认速度、时间和超时
 
 文件：
 
@@ -591,6 +616,8 @@ const uint8_t APP_PUMP_OUT_DIRECTION = MOTOR_REVERSE;
 
 #define APP_Z_MOVE_TIMEOUT_MS           30000U
 #define APP_HOME_TIMEOUT_MS             45000U
+#define APP_Z_REVERSE_DEADTIME_MS       300U
+#define APP_POWER_ON_RESET_DOWN_MS      1000U
 ```
 
 说明：
@@ -598,8 +625,10 @@ const uint8_t APP_PUMP_OUT_DIRECTION = MOTOR_REVERSE;
 - 屏幕上的 `#SPD`、`#SET,ASP_MS` 和 `#SET,TRIM10_MS` 只在本次上电运行内生效，不保存；喷淋补偿时间不由屏幕设置。
 - 如果调试后确定了稳定工艺参数，应把默认值写回 `My/app_config.h`。
 - 若 Z 轴实际移动距离很长导致误报超时，调大 `APP_Z_MOVE_TIMEOUT_MS` 或 `APP_HOME_TIMEOUT_MS`。
+- `APP_POWER_ON_RESET_DOWN_MS` 是上电复位开始时的下探时间；如果触发 PG6，会提前结束下探。
+- `APP_Z_REVERSE_DEADTIME_MS` 是 Z 轴反向前的空档停顿时间；如果实际驱动仍有冲击或保护报警，应适当调大。
 
-### 8.8 修改 USART2 日志和 LED1 生命灯
+### 8.9 修改 USART2 日志和 LED1 生命灯
 
 文件：
 
@@ -634,10 +663,15 @@ const uint8_t APP_PUMP_OUT_DIRECTION = MOTOR_REVERSE;
 | `code` | 状态码或报警码 |
 | `name` | 状态或报警的英文名称 |
 | `pgmask` | PG1~PG16 有效掩码，`1` 表示低电平有效触发 |
-| `target_pg` | Z 轴本次移动目标 PG |
-| `current_z_index` | 当前 Z 轴在 `APP_Z_ORDER` 中识别到的位置索引，`-1` 表示未识别 |
-| `target_z_index` | 目标 PG 在 `APP_Z_ORDER` 中的位置索引 |
+| `step_target` | 本次相邻步进要到达的逻辑位置 |
+| `step_index` | 本次相邻步进目标的逻辑位置索引 |
+| `final_target` | 当前大目标逻辑位置 |
+| `final_index` | 当前大目标逻辑位置索引 |
+| `current_index` | 固件记录的当前逻辑位置索引，`-1` 表示未知 |
+| `sensor_pg` | 该逻辑位置对应的真实 PG；`PG0` 表示无传感器、靠定时 |
+| `mode` | `SENSOR` 表示等 PG，`TIME` 表示定时步进 |
 | `dir` | Z 轴运动方向，`FORWARD/REVERSE/STOP` |
+| `limit_ms` | 本次相邻步进的时间上限或传感器超时 |
 | `elapsed_ms` | 当前阶段已用时间 |
 | `timeout_ms` | 当前移动允许的超时时间 |
 | `active_mask` | 喷淋时仍在运行的泵掩码，bit0 对应泵 1 |
@@ -649,11 +683,11 @@ const uint8_t APP_PUMP_OUT_DIRECTION = MOTOR_REVERSE;
 [0000000020ms][CMD] rx=START volume_ml=100 keep10=1 pgmask=0x0004
 [0000000025ms][AUTO] plan volume_ml=100 machine_ml=90 reserved_ml=10 asp_count=9 spray_count=3 trim10=1 pump_speed=60%
 [0000000030ms][STATE] code=1 name=HOMING pgmask=0x0004
-[0000000032ms][MOVE] target_pg=PG3 current_z_index=0 target_z_index=0 dir=STOP motor_speed=0 pgmask=0x0004
-[0000045001ms][ALARM] code=4 name=Z_TIMEOUT state=14/POWER_ON_RESET target_pg=PG3 pgmask=0x0000 elapsed_ms=45001 timeout_ms=45000
+[0000000032ms][MOVE] step_target=HOME step_index=0 final_target=HOME final_index=0 current_index=-1 mode=SENSOR sensor_pg=PG3 dir=FORWARD motor_speed=700 limit_ms=45000 pgmask=0x0000
+[0000045001ms][ALARM] code=4 name=Z_TIMEOUT state=14/POWER_ON_RESET target_pos=HOME target_index=0 sensor_pg=PG3 pgmask=0x0000 elapsed_ms=45001 timeout_ms=45000
 ```
 
-### 8.9 修改屏幕控件名
+### 8.10 修改屏幕控件名
 
 文件：
 
@@ -674,7 +708,7 @@ const uint8_t APP_PUMP_OUT_DIRECTION = MOTOR_REVERSE;
 
 如果陶晶驰工程里的控件名不一致，要么改 HMI 控件名，要么改这里。两边必须一致。
 
-### 8.10 修改 PG 引脚映射
+### 8.11 修改 PG 引脚映射
 
 文件：
 
@@ -700,7 +734,7 @@ const uint8_t APP_PUMP_OUT_DIRECTION = MOTOR_REVERSE;
 3. 确认 `Core/Inc/main.h` 中仍有 `PG1_Pin` 到 `PG16_Pin`。
 4. 确认 `My/pg.c` 的 `pg_table` 顺序和 `PG_ID` 枚举一致。
 
-### 8.11 修改串口协议
+### 8.12 修改串口协议
 
 文件：
 
@@ -764,7 +798,7 @@ return PG_ReadRaw(id) == GPIO_PIN_RESET;
 3. 发送 `#MAN,Z,STOP;`。
 4. 用低速发送 `#MAN,Z,DOWN,10;`。
 5. 确认 Z 轴确实向下。
-6. 确认到 PG3 上限会停，到 PG14 下限会停。
+6. 确认到 PG3 上限会停，到 PG6 下限会停。
 
 如果方向反了，改 `My/app_config.c` 的 Z 轴方向映射。
 
@@ -784,8 +818,8 @@ return PG_ReadRaw(id) == GPIO_PIN_RESET;
 
 1. 用手动 Z 轴逐档移动。
 2. 记录每个体积实际触发的是哪个 PG。
-3. 修改 `My/app_config.c` 的 `APP_VOLUME_POSITIONS`。
-4. 确认 `APP_Z_ORDER` 与实际从上到下顺序一致。
+3. 先修改 `My/app_config.c` 的 `APP_Z_STEP_DOWN_MS` 和 `APP_Z_STEP_UP_MS`。
+4. 再确认 `APP_VOLUME_POSITIONS` 的吸取逻辑位置和第一次喷淋逻辑位置是否符合工艺。
 
 这一步很关键。体积档位不准时，不要先调吸取时间，先改 PG 表。
 
@@ -877,7 +911,8 @@ arm-none-eabi-gcc -mcpu=cortex-m3 -mthumb -std=c99 -Wall -Wextra -finput-charset
 - PG 低电平有效，观察 `n_pgmask` 时 `1` 表示触发。
 - Z 轴方向反了不要改状态机，先改 `APP_Z_UP_DIRECTION` 和 `APP_Z_DOWN_DIRECTION`。
 - 泵方向反了不要改自动流程，先改 `APP_PUMP_IN_DIRECTION` 和 `APP_PUMP_OUT_DIRECTION`。
-- 体积位置错了优先改 `APP_VOLUME_POSITIONS`。
+- 虚拟体积位置不准优先改 `APP_Z_STEP_DOWN_MS` 和 `APP_Z_STEP_UP_MS`。
+- 第一次喷淋逻辑位置不符合工艺时再改 `APP_VOLUME_POSITIONS`。
 - 第二、第三次喷淋固定体积错了改 `APP_SPRAY_FIXED_VOLUME_STAGE2_ML` 和 `APP_SPRAY_FIXED_VOLUME_STAGE3_ML`。
 - `#SET,ASP_MS`、`#SET,TRIM10_MS` 和 `#SPD` 都不保存，复位后会恢复默认值；喷淋补偿时间是代码内置表。
 - 当前没有 10ml 光电位逻辑，预留 10ml 是自动流程结束后的人工补加逻辑。

@@ -197,6 +197,54 @@ static const char *Logger_DirectionName(uint8_t direction)
     }
 }
 
+static const char *Logger_ZPosName(uint8_t pos)
+{
+    switch ((App_ZPosition)pos) {
+    case APP_Z_POS_HOME:
+        return "HOME";
+    case APP_Z_POS_800ML:
+        return "800ml";
+    case APP_Z_POS_700ML:
+        return "700ml";
+    case APP_Z_POS_600ML:
+        return "600ml";
+    case APP_Z_POS_500ML:
+        return "500ml";
+    case APP_Z_POS_400ML:
+        return "400ml";
+    case APP_Z_POS_300ML:
+        return "300ml";
+    case APP_Z_POS_200ML:
+        return "200ml";
+    case APP_Z_POS_150ML:
+        return "150ml";
+    case APP_Z_POS_100ML:
+        return "100ml";
+    case APP_Z_POS_50ML:
+        return "50ml";
+    case APP_Z_POS_BOTTOM:
+        return "BOTTOM";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+static uint8_t Logger_ZPosSensorPG(uint8_t pos)
+{
+    switch ((App_ZPosition)pos) {
+    case APP_Z_POS_HOME:
+        return PG_ToNumber(APP_Z_HOME_PG);
+    case APP_Z_POS_100ML:
+        return PG_ToNumber(APP_Z_100ML_PG);
+    case APP_Z_POS_50ML:
+        return PG_ToNumber(APP_Z_50ML_PG);
+    case APP_Z_POS_BOTTOM:
+        return PG_ToNumber(APP_Z_BOTTOM_PG);
+    default:
+        return 0U;
+    }
+}
+
 void Logger_Init(void)
 {
     Logger_Info("BOOT", "logger_ready uart=USART2 baud=115200 format=ASCII");
@@ -259,7 +307,7 @@ void Logger_Alarm(uint16_t alarm)
 
 void Logger_AlarmDetail(uint16_t alarm,
                         uint8_t state,
-                        uint8_t target_pg,
+                        uint8_t target_pos,
                         uint16_t pgmask,
                         uint32_t elapsed_ms,
                         uint32_t timeout_ms)
@@ -268,12 +316,14 @@ void Logger_AlarmDetail(uint16_t alarm,
 
     Logger_FormatPrefix(line, sizeof(line), "ALARM");
     (void)snprintf(line + strlen(line), sizeof(line) - strlen(line),
-                   "code=%u name=%s state=%u/%s target_pg=PG%u pgmask=0x%04X elapsed_ms=%lu timeout_ms=%lu\r\n",
+                   "code=%u name=%s state=%u/%s target_pos=%s target_index=%u sensor_pg=PG%u pgmask=0x%04X elapsed_ms=%lu timeout_ms=%lu\r\n",
                    alarm,
                    Logger_AlarmName(alarm),
                    state,
                    Logger_StateName(state),
-                   target_pg,
+                   Logger_ZPosName(target_pos),
+                   target_pos,
+                   Logger_ZPosSensorPG(target_pos),
                    pgmask,
                    (unsigned long)elapsed_ms,
                    (unsigned long)timeout_ms);
@@ -336,23 +386,29 @@ void Logger_Command(const Protocol_Command *command)
     Logger_SendLine(line);
 }
 
-void Logger_Move(uint8_t target_pg,
-                 int8_t current_z_index,
-                 int8_t target_z_index,
+void Logger_Move(uint8_t step_target_pos,
+                 int8_t current_pos,
+                 int8_t final_target_pos,
                  uint8_t direction,
                  uint16_t motor_speed,
+                 uint32_t limit_ms,
                  uint16_t pgmask)
 {
     char line[LOGGER_LINE_SIZE];
 
     Logger_FormatPrefix(line, sizeof(line), "MOVE");
     (void)snprintf(line + strlen(line), sizeof(line) - strlen(line),
-                   "target_pg=PG%u current_z_index=%d target_z_index=%d dir=%s motor_speed=%u pgmask=0x%04X\r\n",
-                   target_pg,
-                   current_z_index,
-                   target_z_index,
+                   "step_target=%s step_index=%u final_target=%s final_index=%d current_index=%d mode=%s sensor_pg=PG%u dir=%s motor_speed=%u limit_ms=%lu pgmask=0x%04X\r\n",
+                   Logger_ZPosName(step_target_pos),
+                   step_target_pos,
+                   Logger_ZPosName((uint8_t)final_target_pos),
+                   final_target_pos,
+                   current_pos,
+                   Logger_ZPosSensorPG(step_target_pos) ? "SENSOR" : "TIME",
+                   Logger_ZPosSensorPG(step_target_pos),
                    Logger_DirectionName(direction),
                    motor_speed,
+                   (unsigned long)limit_ms,
                    pgmask);
     Logger_SendLine(line);
 }
@@ -383,7 +439,7 @@ void Logger_AutoPlan(uint16_t volume_ml,
 void Logger_PhaseStart(const char *tag,
                        uint8_t stage,
                        uint8_t total,
-                       uint8_t target_pg,
+                       uint8_t target_pos,
                        uint32_t duration_ms,
                        uint8_t speed_percent,
                        uint16_t pgmask)
@@ -396,10 +452,12 @@ void Logger_PhaseStart(const char *tag,
 
     Logger_FormatPrefix(line, sizeof(line), tag);
     (void)snprintf(line + strlen(line), sizeof(line) - strlen(line),
-                   "start stage=%u/%u target_pg=PG%u duration_ms=%lu pump_speed=%u%% pgmask=0x%04X\r\n",
+                   "start stage=%u/%u target_pos=%s target_index=%u sensor_pg=PG%u duration_ms=%lu pump_speed=%u%% pgmask=0x%04X\r\n",
                    stage,
                    total,
-                   target_pg,
+                   Logger_ZPosName(target_pos),
+                   target_pos,
+                   Logger_ZPosSensorPG(target_pos),
                    (unsigned long)duration_ms,
                    speed_percent,
                    pgmask);
