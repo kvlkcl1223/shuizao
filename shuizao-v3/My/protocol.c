@@ -172,6 +172,18 @@ static void ParseSet(char **tokens, uint8_t token_count)
     } else if (StringEquals(tokens[1], "TRIM10_MS") ||
                StringEquals(tokens[1], "TRIM_MS")) {
         command.param_target = PROTOCOL_PARAM_TRIM10_MS;
+    } else if (StringEquals(tokens[1], "SPRAY1_MS")) {
+        command.param_target = PROTOCOL_PARAM_SPRAY1_MS;
+    } else if (StringEquals(tokens[1], "SPRAY2_MS")) {
+        command.param_target = PROTOCOL_PARAM_SPRAY2_MS;
+    } else if (StringEquals(tokens[1], "SPRAY3_MS")) {
+        command.param_target = PROTOCOL_PARAM_SPRAY3_MS;
+    } else if (StringEquals(tokens[1], "SPRAY4_MS")) {
+        command.param_target = PROTOCOL_PARAM_SPRAY4_MS;
+    } else if (StringEquals(tokens[1], "SPRAY5_MS")) {
+        command.param_target = PROTOCOL_PARAM_SPRAY5_MS;
+    } else if (StringEquals(tokens[1], "SPRAY6_MS")) {
+        command.param_target = PROTOCOL_PARAM_SPRAY6_MS;
     } else {
         return;
     }
@@ -245,6 +257,18 @@ static void ParseFrame(char *frame)
             command.type = PROTOCOL_CMD_GET_PG;
         } else if (StringEquals(tokens[1], "STATE")) {
             command.type = PROTOCOL_CMD_GET_STATE;
+        } else if (StringEquals(tokens[1], "SPRAY_MS")) {
+            command.type = PROTOCOL_CMD_GET_SPRAY_MS;
+        } else {
+            return;
+        }
+        QueuePush(&command);
+    } else if (StringEquals(tokens[0], "SAVE")) {
+        if (token_count < 2U) {
+            return;
+        }
+        if (StringEquals(tokens[1], "SPRAY_MS")) {
+            command.type = PROTOCOL_CMD_SAVE_SPRAY_MS;
         } else {
             return;
         }

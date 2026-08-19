@@ -6,6 +6,7 @@
 #include "protocol.h"
 #include "pump.h"
 #include "screen.h"
+#include "settings.h"
 #include "tim.h"
 #include <stdbool.h>
 
@@ -15,8 +16,6 @@
  * 自动流程由体积档位表驱动：分阶段吸取、三段喷淋、可选人工预留 10ml，流程结束后回原点。
  */
 
-#define APP_TIME_MIN_MS 100U
-#define APP_TIME_MAX_MS 600000U
 #define APP_ALL_PUMP_MASK ((uint8_t)((1U << APP_PUMP_COUNT) - 1U))
 
 typedef enum {
@@ -36,6 +35,7 @@ static uint8_t app_pump_speed_percent = APP_DEFAULT_PUMP_SPEED_PERCENT;
 /* HMI 可临时修改的工艺时间；不写入 Flash，断电或复位后恢复默认值。 */
 static uint32_t app_aspirate_phase_ms = APP_ASPIRATE_PHASE_MS;
 static uint32_t app_trim10_ms = APP_TRIM_10ML_MS;
+static uint32_t app_spray_pump_ms[APP_PUMP_COUNT];
 
 /* START 后按体积档位表生成本次自动流程的吸取和喷淋目标。 */
 static App_ZPosition app_aspirate_sequence[APP_MAX_AUTO_PHASES];
@@ -183,13 +183,42 @@ static uint32_t App_ZStepDurationMs(App_ZPosition from, App_ZPosition to)
 
 static uint32_t App_ClampProcessTimeMs(uint32_t time_ms)
 {
+#if APP_TIME_MIN_MS > 0U
     if (time_ms < APP_TIME_MIN_MS) {
         return APP_TIME_MIN_MS;
     }
+#endif
     if (time_ms > APP_TIME_MAX_MS) {
         return APP_TIME_MAX_MS;
     }
     return time_ms;
+}
+
+static void App_LoadDefaultSprayTimes(void)
+{
+    for (uint8_t i = 0U; i < APP_PUMP_COUNT; i++) {
+        app_spray_pump_ms[i] = App_ClampProcessTimeMs(APP_SPRAY_PUMP_MS[i]);
+    }
+}
+
+static int8_t App_SprayParamIndex(Protocol_ParamTarget target)
+{
+    switch (target) {
+    case PROTOCOL_PARAM_SPRAY1_MS:
+        return 0;
+    case PROTOCOL_PARAM_SPRAY2_MS:
+        return 1;
+    case PROTOCOL_PARAM_SPRAY3_MS:
+        return 2;
+    case PROTOCOL_PARAM_SPRAY4_MS:
+        return 3;
+    case PROTOCOL_PARAM_SPRAY5_MS:
+        return 4;
+    case PROTOCOL_PARAM_SPRAY6_MS:
+        return 5;
+    default:
+        return -1;
+    }
 }
 
 static void App_SetState(App_State state)
@@ -361,6 +390,18 @@ static bool App_ZDirectionIsReverse(uint8_t first, uint8_t second)
            (first == APP_Z_DOWN_DIRECTION && second == APP_Z_UP_DIRECTION);
 }
 
+static bool App_CheckYReadyForZMotion(void)
+{
+    if (PG_IsActive(APP_Y_READY_PG)) {
+        return true;
+    }
+
+    Logger_Info("SAFE", "y_not_ready_during_z_motion");
+    App_Fail(APP_ALARM_Y_NOT_READY);
+    Screen_ShowWarningPage();
+    return false;
+}
+
 static void App_ZCancelPendingDrive(void)
 {
     app_z_reverse_deadtime_active = false;
@@ -378,6 +419,10 @@ static bool App_ZStartDrive(uint8_t direction, uint16_t speed)
 {
     if (!App_ZDirectionIsRun(direction) || speed == 0U) {
         App_ZBrake();
+        return false;
+    }
+
+    if (!App_CheckYReadyForZMotion()) {
         return false;
     }
 
@@ -414,6 +459,10 @@ static bool App_ZDeadtimeTask(void)
 
     if (!App_ZDirectionIsRun(app_z_pending_direction) || app_z_pending_speed == 0U) {
         App_ZCancelPendingDrive();
+        return false;
+    }
+
+    if (!App_CheckYReadyForZMotion()) {
         return false;
     }
 
@@ -590,6 +639,10 @@ static bool App_TargetReached(void)
         return false;
     }
 
+    if (!App_CheckYReadyForZMotion()) {
+        return false;
+    }
+
     if (App_ZDeadtimeTask()) {
         app_step_start_tick = Now();
     }
@@ -641,6 +694,10 @@ static uint32_t App_MoveTimeoutLimitMs(void)
 static void App_TaskPowerOnReset(void)
 {
     if (app_power_reset_phase == APP_POWER_RESET_PHASE_DOWN) {
+        if (!App_CheckYReadyForZMotion()) {
+            return;
+        }
+
         if (App_ZDeadtimeTask()) {
             app_power_reset_start_tick = Now();
         }
@@ -726,8 +783,8 @@ static uint32_t App_GetSprayMaxMs(void)
     uint32_t max_ms = 0U;
 
     for (uint8_t i = 0U; i < APP_PUMP_COUNT; i++) {
-        if (APP_SPRAY_PUMP_MS[i] > max_ms) {
-            max_ms = APP_SPRAY_PUMP_MS[i];
+        if (app_spray_pump_ms[i] > max_ms) {
+            max_ms = app_spray_pump_ms[i];
         }
     }
 
@@ -868,7 +925,9 @@ static void App_HandleManual(const Protocol_Command *command)
             app_current_pos = APP_Z_POS_INVALID;
             Logger_Value("MAN", "z_up_speed", speed);
             (void)App_ZStartDrive(APP_Z_UP_DIRECTION, Pump_SpeedPercentToMotorSpeed(speed));
-            App_SetState(APP_STATE_MANUAL);
+            if (app_state != APP_STATE_ERROR) {
+                App_SetState(APP_STATE_MANUAL);
+            }
         } else if (command->manual_action == PROTOCOL_MANUAL_ACTION_DOWN) {
             Pump_StopAll();
             app_manual_pump_action = PROTOCOL_MANUAL_ACTION_NONE;
@@ -876,7 +935,9 @@ static void App_HandleManual(const Protocol_Command *command)
             app_current_pos = APP_Z_POS_INVALID;
             Logger_Value("MAN", "z_down_speed", speed);
             (void)App_ZStartDrive(APP_Z_DOWN_DIRECTION, Pump_SpeedPercentToMotorSpeed(speed));
-            App_SetState(APP_STATE_MANUAL);
+            if (app_state != APP_STATE_ERROR) {
+                App_SetState(APP_STATE_MANUAL);
+            }
         } else if (command->manual_action == PROTOCOL_MANUAL_ACTION_STOP) {
             App_ZBrake();
             app_manual_z_action = PROTOCOL_MANUAL_ACTION_NONE;
@@ -916,6 +977,8 @@ static void App_HandleManual(const Protocol_Command *command)
 static void App_HandleSetParam(const Protocol_Command *command)
 {
     uint32_t value;
+    int8_t spray_index;
+    bool spray_time_changed = false;
 
     if (App_IsAutoRunning()) {
         app_alarm = APP_ALARM_BUSY;
@@ -937,14 +1000,50 @@ static void App_HandleSetParam(const Protocol_Command *command)
         Logger_Value("SET", "trim10_ms", value);
         break;
     default:
-        app_alarm = APP_ALARM_BAD_COMMAND;
-        Screen_ShowMessage("BAD CMD");
-        Screen_ShowAlarm((uint16_t)app_alarm);
-        return;
+        spray_index = App_SprayParamIndex(command->param_target);
+        if (spray_index < 0 || (uint8_t)spray_index >= APP_PUMP_COUNT) {
+            app_alarm = APP_ALARM_BAD_COMMAND;
+            Screen_ShowMessage("BAD CMD");
+            Screen_ShowAlarm((uint16_t)app_alarm);
+            return;
+        }
+        app_spray_pump_ms[(uint8_t)spray_index] = value;
+        Logger_Value("SET", "spray_pump_ms", value);
+        spray_time_changed = true;
+        break;
     }
 
     app_alarm = APP_ALARM_NONE;
     Screen_ShowMessage("SET OK");
+    if (spray_time_changed) {
+        Screen_UpdateSprayTimes(app_spray_pump_ms);
+    }
+    App_ReportStatus(true);
+}
+
+static void App_HandleSaveSprayTimes(void)
+{
+    if (App_IsAutoRunning()) {
+        app_alarm = APP_ALARM_BUSY;
+        Logger_Info("SAVE", "rejected reason=BUSY");
+        Screen_ShowMessage("BUSY");
+        Screen_ShowAlarm((uint16_t)app_alarm);
+        return;
+    }
+
+    if (Settings_SaveSprayMs(app_spray_pump_ms)) {
+        app_alarm = APP_ALARM_NONE;
+        Logger_Info("SAVE", "spray_ms result=ok");
+        Screen_ShowMessage("SAVE OK");
+        Screen_ShowAlarm((uint16_t)app_alarm);
+    } else {
+        app_alarm = APP_ALARM_SAVE_FAILED;
+        Logger_Info("SAVE", "spray_ms result=failed");
+        Screen_ShowMessage("SAVE ERR");
+        Screen_ShowAlarm((uint16_t)app_alarm);
+    }
+
+    Screen_UpdateSprayTimes(app_spray_pump_ms);
     App_ReportStatus(true);
 }
 
@@ -1024,6 +1123,15 @@ static void App_HandleCommand(const Protocol_Command *command)
         App_ReportStatus(true);
         break;
 
+    case PROTOCOL_CMD_GET_SPRAY_MS:
+        Screen_UpdateSprayTimes(app_spray_pump_ms);
+        App_ReportStatus(true);
+        break;
+
+    case PROTOCOL_CMD_SAVE_SPRAY_MS:
+        App_HandleSaveSprayTimes();
+        break;
+
     case PROTOCOL_CMD_RESET:
         __set_FAULTMASK(1);
         HAL_NVIC_SystemReset();
@@ -1049,7 +1157,13 @@ static void App_ProcessCommands(void)
 
 static void App_TaskManual(void)
 {
-    (void)App_ZDeadtimeTask();
+    if (app_manual_z_action != PROTOCOL_MANUAL_ACTION_NONE) {
+        if (!App_CheckYReadyForZMotion()) {
+            return;
+        }
+
+        (void)App_ZDeadtimeTask();
+    }
 
     /* 手动上升/下降分别用 PG3/PG6 做软限位。 */
     if (app_manual_z_action == PROTOCOL_MANUAL_ACTION_UP &&
@@ -1093,7 +1207,7 @@ static void App_StartSprayPumps(void)
 
     /* 三段喷淋共用同一套 6 泵补偿时间：同开，按各自时间分别停止。 */
     for (uint8_t i = 0U; i < APP_PUMP_COUNT; i++) {
-        if (APP_SPRAY_PUMP_MS[i] > 0U) {
+        if (app_spray_pump_ms[i] > 0U) {
             Pump_RunOne(i, PUMP_DIR_OUT, app_pump_speed_percent);
             app_spray_active_pump_mask |= (uint8_t)(1U << i);
         } else {
@@ -1132,12 +1246,12 @@ static void App_TaskSpraying(void)
     for (uint8_t i = 0U; i < APP_PUMP_COUNT; i++) {
         uint8_t pump_bit = (uint8_t)(1U << i);
         if ((app_spray_active_pump_mask & pump_bit) != 0U &&
-            elapsed >= APP_SPRAY_PUMP_MS[i]) {
+            elapsed >= app_spray_pump_ms[i]) {
             Pump_StopOne(i);
             app_spray_active_pump_mask &= (uint8_t)(~pump_bit);
             Logger_SprayPumpStop((uint8_t)(app_phase_index + 1U),
                                  (uint8_t)(i + 1U),
-                                 APP_SPRAY_PUMP_MS[i],
+                                 app_spray_pump_ms[i],
                                  elapsed,
                                  app_spray_active_pump_mask,
                                  PG_ReadMask());
@@ -1180,6 +1294,7 @@ static void App_TaskAuto(void)
         } else {
             Logger_Info("AUTO", "y_not_ready");
             App_Fail(APP_ALARM_Y_NOT_READY);
+            Screen_ShowWarningPage();
         }
         break;
 
@@ -1303,6 +1418,12 @@ void App_Init(void)
     app_pump_speed_percent = Pump_ClampSpeedPercent(APP_DEFAULT_PUMP_SPEED_PERCENT);
     app_aspirate_phase_ms = App_ClampProcessTimeMs(APP_ASPIRATE_PHASE_MS);
     app_trim10_ms = App_ClampProcessTimeMs(APP_TRIM_10ML_MS);
+    App_LoadDefaultSprayTimes();
+    if (Settings_LoadSprayMs(app_spray_pump_ms)) {
+        Logger_Info("BOOT", "spray_ms_load source=flash");
+    } else {
+        Logger_Info("BOOT", "spray_ms_load source=default");
+    }
     app_last_screen_tick = 0U;
     app_auto_after_home = false;
     app_return_after_success = false;
@@ -1318,6 +1439,7 @@ void App_Init(void)
 #endif
 
     App_ReportStatus(true);
+    Screen_UpdateSprayTimes(app_spray_pump_ms);
 }
 
 void App_Task(void)

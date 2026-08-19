@@ -18,7 +18,7 @@
           <Vendor>STMicroelectronics</Vendor>
           <PackID>Keil.STM32F1xx_DFP.2.4.1</PackID>
           <PackURL>https://www.keil.com/pack/</PackURL>
-          <Cpu>IRAM(0x20000000-0x2000BFFF) IROM(0x8000000-0x803FFFF)  CLOCK(8000000) CPUTYPE("Cortex-M3") TZ</Cpu>
+          <Cpu>IRAM(0x20000000-0x2000BFFF) IROM(0x8000000-0x803F7FF)  CLOCK(8000000) CPUTYPE("Cortex-M3") TZ</Cpu>
           <FlashUtilSpec></FlashUtilSpec>
           <StartupFile></StartupFile>
           <FlashDriverDll></FlashDriverDll>
@@ -252,7 +252,7 @@
               <IROM>
                 <Type>1</Type>
                 <StartAddress>0x8000000</StartAddress>
-                <Size>0x40000</Size>
+                <Size>0x3f800</Size>
               </IROM>
               <XRAM>
                 <Type>0</Type>
@@ -277,7 +277,7 @@
               <OCR_RVCT4>
                 <Type>1</Type>
                 <StartAddress>0x8000000</StartAddress>
-                <Size>0x40000</Size>
+                <Size>0x3f800</Size>
               </OCR_RVCT4>
               <OCR_RVCT5>
                 <Type>1</Type>
@@ -609,6 +609,11 @@
               <FileName>app.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\My\app.c</FilePath>
+            </File>
+            <File>
+              <FileName>settings.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\My\settings.c</FilePath>
             </File>
           </Files>
         </Group>

@@ -31,6 +31,12 @@ void Screen_ShowMessage(const char *text);
 /* 更新默认报警码控件。 */
 void Screen_ShowAlarm(uint16_t alarm_code);
 
+/* 跳转到警告页面。页面名由 APP_SCREEN_WARNING_PAGE 配置。 */
+void Screen_ShowWarningPage(void);
+
+/* 同步 6 个喷淋补偿时间到 HMI 的滑轴和数值控件。 */
+void Screen_UpdateSprayTimes(const uint32_t *spray_ms);
+
 /* 批量刷新状态、阶段、速度、PG 掩码、预留 10ml 标志、报警和进度。 */
 void Screen_UpdateStatus(uint8_t state,
                          uint8_t phase,

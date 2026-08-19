@@ -40,7 +40,8 @@ typedef enum {
     APP_ALARM_Y_NOT_READY = 3,
     APP_ALARM_Z_TIMEOUT = 4,
     APP_ALARM_BAD_COMMAND = 5,
-    APP_ALARM_BAD_CONFIG = 6
+    APP_ALARM_BAD_CONFIG = 6,
+    APP_ALARM_SAVE_FAILED = 7
 } App_Alarm;
 
 /* 初始化电机、泵、协议和屏幕层。 */

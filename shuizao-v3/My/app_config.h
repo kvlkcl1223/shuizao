@@ -53,6 +53,8 @@ typedef enum {
 #define APP_Z_SPEED_PERCENT             70U
 
 /* 自动流程默认时间。真实工艺时间未确认前先用占位值，HMI 也可通过 #SET 临时修改。 */
+#define APP_TIME_MIN_MS                 0U
+#define APP_TIME_MAX_MS                 6000U
 #define APP_ASPIRATE_PHASE_MS           5000U
 #define APP_TRIM_10ML_MS                1000U
 #define APP_SPRAY_PUMP1_MS              5000U
@@ -103,6 +105,30 @@ typedef enum {
 #define APP_SCREEN_KEEP10_OBJ           "n_keep10"
 #define APP_SCREEN_ALARM_OBJ            "n_alarm"
 #define APP_SCREEN_PROGRESS_OBJ         "j_progress"
+
+/* Y 轴位置异常时跳转的警告页面名称。HMI 页面名变更时只改这里。 */
+#define APP_SCREEN_WARNING_PAGE         "warn"
+
+/* 喷淋补偿时间调试控件。滑轴和数值控件都由 MCU 回填，便于页面打开时同步当前值。 */
+#define APP_SCREEN_SPRAY1_SLIDER_OBJ    "h_spray1_ms"
+#define APP_SCREEN_SPRAY2_SLIDER_OBJ    "h_spray2_ms"
+#define APP_SCREEN_SPRAY3_SLIDER_OBJ    "h_spray3_ms"
+#define APP_SCREEN_SPRAY4_SLIDER_OBJ    "h_spray4_ms"
+#define APP_SCREEN_SPRAY5_SLIDER_OBJ    "h_spray5_ms"
+#define APP_SCREEN_SPRAY6_SLIDER_OBJ    "h_spray6_ms"
+#define APP_SCREEN_SPRAY1_VALUE_OBJ     "n_spray1_ms"
+#define APP_SCREEN_SPRAY2_VALUE_OBJ     "n_spray2_ms"
+#define APP_SCREEN_SPRAY3_VALUE_OBJ     "n_spray3_ms"
+#define APP_SCREEN_SPRAY4_VALUE_OBJ     "n_spray4_ms"
+#define APP_SCREEN_SPRAY5_VALUE_OBJ     "n_spray5_ms"
+#define APP_SCREEN_SPRAY6_VALUE_OBJ     "n_spray6_ms"
+
+/*
+ * 参数保存 Flash 页。
+ * STM32F103RC 当前 Keil IROM 已预留最后 2KB，应用程序不要链接到 0x0803F800 之后。
+ */
+#define APP_SETTINGS_FLASH_ADDR         0x0803F800U
+#define APP_SETTINGS_FLASH_PAGE_SIZE    2048U
 
 /* 体积档位表。first_spray_pos 是“吸取位置下一档喷淋”的实际目标。 */
 typedef struct {

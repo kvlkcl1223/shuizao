@@ -106,6 +106,8 @@ static const char *Logger_AlarmName(uint16_t alarm)
         return "BAD_COMMAND";
     case APP_ALARM_BAD_CONFIG:
         return "BAD_CONFIG";
+    case APP_ALARM_SAVE_FAILED:
+        return "SAVE_FAILED";
     default:
         return "UNKNOWN";
     }
@@ -134,6 +136,10 @@ static const char *Logger_CommandName(Protocol_CommandType type)
         return "GET_PG";
     case PROTOCOL_CMD_GET_STATE:
         return "GET_STATE";
+    case PROTOCOL_CMD_GET_SPRAY_MS:
+        return "GET_SPRAY_MS";
+    case PROTOCOL_CMD_SAVE_SPRAY_MS:
+        return "SAVE_SPRAY_MS";
     case PROTOCOL_CMD_RESET:
         return "RESET";
     default:
@@ -148,6 +154,18 @@ static const char *Logger_ParamName(Protocol_ParamTarget target)
         return "ASP_MS";
     case PROTOCOL_PARAM_TRIM10_MS:
         return "TRIM10_MS";
+    case PROTOCOL_PARAM_SPRAY1_MS:
+        return "SPRAY1_MS";
+    case PROTOCOL_PARAM_SPRAY2_MS:
+        return "SPRAY2_MS";
+    case PROTOCOL_PARAM_SPRAY3_MS:
+        return "SPRAY3_MS";
+    case PROTOCOL_PARAM_SPRAY4_MS:
+        return "SPRAY4_MS";
+    case PROTOCOL_PARAM_SPRAY5_MS:
+        return "SPRAY5_MS";
+    case PROTOCOL_PARAM_SPRAY6_MS:
+        return "SPRAY6_MS";
     default:
         return "NONE";
     }

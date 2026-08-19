@@ -152,8 +152,9 @@ prints "#OK;",0
 参数：
 
 - `param`：时间参数名。
-- `time_ms`：毫秒，固件会夹紧到 `100~600000`。
-- 设置值不保存，断电或复位后恢复 `My/app_config.h` 中默认值。
+- `time_ms`：毫秒，固件会夹紧到 `0~6000`。
+- `ASP_MS` 和 `TRIM10_MS` 不保存，断电或复位后恢复 `My/app_config.h` 中默认值。
+- `SPRAY1_MS` 到 `SPRAY6_MS` 先写入 RAM，发送 `#SAVE,SPRAY_MS;` 后写入 Flash。
 - 自动流程运行中发送 `#SET` 会被拒绝并返回 BUSY 状态。
 
 支持的参数：
@@ -162,12 +163,19 @@ prints "#OK;",0
 |---|---|---|
 | `ASP_MS` 或 `ASPIRATE_MS` | 每个吸取档位的固定吸取时间 | `APP_ASPIRATE_PHASE_MS` |
 | `TRIM10_MS` 或 `TRIM_MS` | 预留 10ml 时的定时补吸时间 | `APP_TRIM_10ML_MS` |
+| `SPRAY1_MS` | 泵 1 喷淋补偿时间，三段喷淋共用 | `APP_SPRAY_PUMP1_MS` 或 Flash 保存值 |
+| `SPRAY2_MS` | 泵 2 喷淋补偿时间，三段喷淋共用 | `APP_SPRAY_PUMP2_MS` 或 Flash 保存值 |
+| `SPRAY3_MS` | 泵 3 喷淋补偿时间，三段喷淋共用 | `APP_SPRAY_PUMP3_MS` 或 Flash 保存值 |
+| `SPRAY4_MS` | 泵 4 喷淋补偿时间，三段喷淋共用 | `APP_SPRAY_PUMP4_MS` 或 Flash 保存值 |
+| `SPRAY5_MS` | 泵 5 喷淋补偿时间，三段喷淋共用 | `APP_SPRAY_PUMP5_MS` 或 Flash 保存值 |
+| `SPRAY6_MS` | 泵 6 喷淋补偿时间，三段喷淋共用 | `APP_SPRAY_PUMP6_MS` 或 Flash 保存值 |
 
 示例：
 
 ```text
 #SET,ASP_MS,5000;
 #SET,TRIM10_MS,1000;
+#SET,SPRAY1_MS,3500;
 ```
 
 ## 4. 停止、回原点和复位
@@ -245,11 +253,29 @@ prints "#OK;",0
 ```text
 #GET,PG;
 #GET,STATE;
+#GET,SPRAY_MS;
 ```
 
-当前实现中，查询命令会触发 MCU 立即刷新屏幕状态控件。
+当前实现中，查询命令会触发 MCU 立即刷新屏幕控件。
 
-## 7. MCU 到屏幕状态刷新
+- `#GET,PG;`：刷新 PG 掩码。
+- `#GET,STATE;`：刷新状态、报警、速度、阶段和进度。
+- `#GET,SPRAY_MS;`：刷新 6 个喷淋时间滑轴和 6 个喷淋时间数值控件。
+
+## 7. 保存命令
+
+```text
+#SAVE,SPRAY_MS;
+```
+
+含义：
+
+- 将当前 RAM 中的 `SPRAY1_MS` 到 `SPRAY6_MS` 写入 MCU 片内 Flash。
+- MCU 初始化时优先从 Flash 读取；Flash 记录无效时使用 `app_config.h` 默认值。
+- 自动流程运行中发送保存命令会被拒绝并显示 `BUSY`。
+- 保存成功显示 `SAVE OK`，保存失败显示 `SAVE ERR` 并报 `SAVE_FAILED`。
+
+## 8. MCU 到屏幕状态刷新
 
 MCU 向陶晶驰屏幕发送原生命令，结尾固定追加：
 
@@ -269,6 +295,25 @@ FF FF FF
 | `APP_SCREEN_KEEP10_OBJ` | `n_keep10` | 是否预留 10ml |
 | `APP_SCREEN_ALARM_OBJ` | `n_alarm` | 报警码 |
 | `APP_SCREEN_PROGRESS_OBJ` | `j_progress` | 当前定时阶段进度 |
+| `APP_SCREEN_WARNING_PAGE` | `warn` | Y 轴异常时跳转的警告页面 |
+| `APP_SCREEN_SPRAY1_SLIDER_OBJ` | `h_spray1_ms` | 泵 1 喷淋时间滑轴 |
+| `APP_SCREEN_SPRAY2_SLIDER_OBJ` | `h_spray2_ms` | 泵 2 喷淋时间滑轴 |
+| `APP_SCREEN_SPRAY3_SLIDER_OBJ` | `h_spray3_ms` | 泵 3 喷淋时间滑轴 |
+| `APP_SCREEN_SPRAY4_SLIDER_OBJ` | `h_spray4_ms` | 泵 4 喷淋时间滑轴 |
+| `APP_SCREEN_SPRAY5_SLIDER_OBJ` | `h_spray5_ms` | 泵 5 喷淋时间滑轴 |
+| `APP_SCREEN_SPRAY6_SLIDER_OBJ` | `h_spray6_ms` | 泵 6 喷淋时间滑轴 |
+| `APP_SCREEN_SPRAY1_VALUE_OBJ` | `n_spray1_ms` | 泵 1 喷淋时间数值 |
+| `APP_SCREEN_SPRAY2_VALUE_OBJ` | `n_spray2_ms` | 泵 2 喷淋时间数值 |
+| `APP_SCREEN_SPRAY3_VALUE_OBJ` | `n_spray3_ms` | 泵 3 喷淋时间数值 |
+| `APP_SCREEN_SPRAY4_VALUE_OBJ` | `n_spray4_ms` | 泵 4 喷淋时间数值 |
+| `APP_SCREEN_SPRAY5_VALUE_OBJ` | `n_spray5_ms` | 泵 5 喷淋时间数值 |
+| `APP_SCREEN_SPRAY6_VALUE_OBJ` | `n_spray6_ms` | 泵 6 喷淋时间数值 |
+
+当 PG1 在任意 Z 轴动作前或动作中无效时，MCU 会停止执行机构，报警 `Y_NOT_READY`，并发送：
+
+```text
+page warn FF FF FF
+```
 
 PG 掩码规则：
 
@@ -283,9 +328,11 @@ PG 掩码规则：
 n_speed.val=60 FF FF FF
 n_pgmask.val=3 FF FF FF
 t6.txt="READY" FF FF FF
+h_spray1_ms.val=3500 FF FF FF
+n_spray1_ms.val=3500 FF FF FF
 ```
 
-## 8. 状态码
+## 9. 状态码
 
 状态码对应 `App_State`：
 
@@ -309,7 +356,7 @@ t6.txt="READY" FF FF FF
 
 建议 HMI 用 `n_state.val` 做中文映射，而不是依赖 `t6` 的英文短文本。
 
-## 9. 报警码
+## 10. 报警码
 
 报警码对应 `App_Alarm`：
 
@@ -318,12 +365,13 @@ t6.txt="READY" FF FF FF
 | 0 | `NONE` | 无报警 |
 | 1 | `BUSY` | 当前忙，拒绝命令 |
 | 2 | `BAD_VOLUME` | 体积参数错误 |
-| 3 | `Y_NOT_READY` | Y 轴不在允许位置 |
+| 3 | `Y_NOT_READY` | Y 轴不在允许位置；触发后 MCU 会跳转到 `warn` 页面 |
 | 4 | `Z_TIMEOUT` | Z 轴到位超时 |
 | 5 | `BAD_COMMAND` | 命令无效 |
 | 6 | `BAD_CONFIG` | 固件体积或喷淋配置错误 |
+| 7 | `SAVE_FAILED` | Flash 保存喷淋补偿时间失败 |
 
-## 10. 当前硬件映射
+## 11. 当前硬件映射
 
 硬件映射集中在 `My/app_config.c`：
 
@@ -340,7 +388,14 @@ t6.txt="READY" FF FF FF
 | Z 轴下限/底部 | PG6 |
 | PG 有效电平 | 低电平有效 |
 
-## 11. 当前体积档位和喷淋规则
+Y 轴保护规则：
+
+- 自动流程开始前会检查 PG1。
+- 所有 Z 轴动作启动前都会检查 PG1。
+- Z 轴动作过程中会持续检查 PG1，包括上电复位、回原点、移动到吸取位、移动到喷淋位、自动结束回原点和手动 Z 轴上下。
+- PG1 无效时立即停止全部执行机构，进入 `ERROR`，报警码为 `Y_NOT_READY`，并跳转到 `warn` 页面。
+
+## 12. 当前体积档位和喷淋规则
 
 体积档位集中在 `My/app_config.c` 的 `APP_VOLUME_POSITIONS`，当前默认：
 
@@ -387,12 +442,12 @@ HOME(PG3) -> 800 -> 700 -> 600 -> 500 -> 400 -> 300 -> 200 -> 150 -> 100(PG4) ->
 - 第一次：使用目标档位表中的 `first_spray_pos`，表示“吸取位置下一档位置喷淋”。
 - 第二次：固定 300ml 位置喷淋。
 - 第三次：固定 800ml 位置喷淋。
-- 三段喷淋共用同一套 6 泵补偿时间，补偿时间在 `My/app_config.c` 的 `APP_SPRAY_PUMP_MS` 中内置。
+- 三段喷淋共用同一套 6 泵补偿时间。上电时优先使用 Flash 保存值；没有有效保存值时使用 `My/app_config.c` 的 `APP_SPRAY_PUMP_MS` 默认值。
 - 每段喷淋开始时 6 个泵同时启动，每个泵按自己的补偿时间停止；6 个泵全部停止后才进入下一段喷淋。
 
-## 12. HMI 页面事件建议
+## 13. HMI 页面事件建议
 
-### 12.1 主页面或配方选择页面
+### 13.1 主页面或配方选择页面
 
 建议放置：
 
@@ -421,7 +476,7 @@ prints t_tmp.txt,0
 prints ";",0
 ```
 
-### 12.2 速度设置页面
+### 13.2 速度设置页面
 
 建议放置滑条或数字输入 `n_speed_set`，范围限制为 `10~100`。确认按钮事件：
 
@@ -432,7 +487,7 @@ prints t_tmp.txt,0
 prints ";",0
 ```
 
-### 12.3 时间设置页面
+### 13.3 时间设置页面
 
 建议放置两个数字输入，单位毫秒：
 
@@ -455,9 +510,41 @@ prints t_tmp.txt,0
 prints ";",0
 ```
 
-喷淋补偿时间不由 HMI 设置。泵 1~6 的喷淋补偿时间需要在固件 `APP_SPRAY_PUMP_MS` 表中修改。
+喷淋补偿时间由 HMI 设置页面调整。你已定义滑轴 `h_spray1_ms` 到 `h_spray6_ms`，以及数值 `n_spray1_ms` 到 `n_spray6_ms`。
 
-### 12.4 手动调试页面
+页面打开时建议先读取 MCU 当前值：
+
+```text
+prints "#GET,SPRAY_MS;",0
+```
+
+泵 1 滑轴弹起事件：
+
+```text
+n_spray1_ms.val=h_spray1_ms.val
+prints "#SET,SPRAY1_MS,",0
+prints h_spray1_ms.val,0
+prints ";",0
+```
+
+泵 2 滑轴弹起事件：
+
+```text
+n_spray2_ms.val=h_spray2_ms.val
+prints "#SET,SPRAY2_MS,",0
+prints h_spray2_ms.val,0
+prints ";",0
+```
+
+泵 3 到泵 6 依次把编号改成 `3~6`。
+
+保存按钮按下或弹起事件：
+
+```text
+prints "#SAVE,SPRAY_MS;",0
+```
+
+### 13.4 手动调试页面
 
 建议按钮按“按下开始、松开停止”写事件。
 
@@ -501,7 +588,7 @@ prints "#MAN,PUMP,OUT,60;",0
 prints "#MAN,PUMP,STOP;",0
 ```
 
-### 12.5 人工补加确认页面
+### 13.5 人工补加确认页面
 
 当 `n_state.val==9` 时，HMI 应进入或弹出人工提示页面。页面文字建议由屏幕资源显示：
 
@@ -515,7 +602,7 @@ prints "#MAN,PUMP,STOP;",0
 prints "#OK;",0
 ```
 
-### 12.6 状态刷新和报警显示
+### 13.6 状态刷新和报警显示
 
 建议 HMI 周期性或在状态控件变化时读取这些 MCU 写入的控件：
 

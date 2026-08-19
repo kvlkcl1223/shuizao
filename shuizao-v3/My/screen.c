@@ -68,6 +68,43 @@ void Screen_ShowAlarm(uint16_t alarm_code)
     Screen_SetValue(APP_SCREEN_ALARM_OBJ, alarm_code);
 }
 
+void Screen_ShowWarningPage(void)
+{
+    char buffer[48];
+
+    sprintf(buffer, "page %s", APP_SCREEN_WARNING_PAGE);
+    Screen_Command(buffer);
+}
+
+void Screen_UpdateSprayTimes(const uint32_t *spray_ms)
+{
+    static const char *slider_objs[APP_PUMP_COUNT] = {
+        APP_SCREEN_SPRAY1_SLIDER_OBJ,
+        APP_SCREEN_SPRAY2_SLIDER_OBJ,
+        APP_SCREEN_SPRAY3_SLIDER_OBJ,
+        APP_SCREEN_SPRAY4_SLIDER_OBJ,
+        APP_SCREEN_SPRAY5_SLIDER_OBJ,
+        APP_SCREEN_SPRAY6_SLIDER_OBJ
+    };
+    static const char *value_objs[APP_PUMP_COUNT] = {
+        APP_SCREEN_SPRAY1_VALUE_OBJ,
+        APP_SCREEN_SPRAY2_VALUE_OBJ,
+        APP_SCREEN_SPRAY3_VALUE_OBJ,
+        APP_SCREEN_SPRAY4_VALUE_OBJ,
+        APP_SCREEN_SPRAY5_VALUE_OBJ,
+        APP_SCREEN_SPRAY6_VALUE_OBJ
+    };
+
+    if (spray_ms == 0) {
+        return;
+    }
+
+    for (uint8_t i = 0U; i < APP_PUMP_COUNT; i++) {
+        Screen_SetValue(slider_objs[i], (int32_t)spray_ms[i]);
+        Screen_SetValue(value_objs[i], (int32_t)spray_ms[i]);
+    }
+}
+
 void Screen_UpdateStatus(uint8_t state,
                          uint8_t phase,
                          uint8_t speed_percent,

@@ -17,7 +17,7 @@
 - LED1 是生命灯，由 TIM5 周期中断分频翻转，上电并启动应用后应持续闪烁。
 - 屏幕发给 MCU 的命令格式为 `#命令,参数;`。
 - MCU 给屏幕写陶晶驰/Nextion 原生命令，自动追加 `0xFF 0xFF 0xFF`。
-- PG1 和 PG2 属于 Y 轴位置检测，目前默认只使用 PG1 作为允许工作位置。
+- PG1 和 PG2 属于 Y 轴位置检测，目前默认只使用 PG1 作为允许 Z 轴动作的位置。
 - Z 轴只使用 4 个真实传感器：PG3 上限/原点，PG4 100ml，PG5 50ml，PG6 下限/底部。
 - 800/700/600/500/400/300/200/150ml 这些位置靠相邻位置定时步进到达。
 - PG7 到 PG16 当前不参与 Z 轴定位。
@@ -110,7 +110,7 @@ Z 轴所有可能从上行切到下行、或从下行切到上行的动作，都
 2. 检查目标体积是否合法。
 3. 根据 `My/app_config.c` 的体积档位表生成本次吸取和喷淋计划。
 4. Z 轴先回原点，当前默认原点为 PG3。
-5. 检查 Y 轴是否在允许工作位置，当前默认要求 PG1 有效。
+5. 检查 Y 轴是否在允许工作位置，当前默认要求 PG1 有效；后续所有 Z 轴动作前和动作中也会持续检查 PG1。
 6. 按体积档位从高液位到目标档位逐级移动；虚拟体积位置靠相邻步进定时到达，100ml/50ml 用 PG4/PG5 确认。
 7. 每到一个吸取档位，6 路蠕动泵按吸取方向运行固定时间。
 8. 如果启用预留 10ml，执行一次定时补吸。
@@ -158,7 +158,7 @@ Z 轴所有可能从上行切到下行、或从下行切到上行的动作，都
 当前会执行：
 
 1. 回原点 PG3。
-2. 检查 PG1。
+2. 检查 PG1；如果 PG1 后续在 Z 轴动作中失效，立即停机并跳转到 `warn` 页面。
 3. 从 HOME 向下定时步进到 800ml，吸取固定时间。
 4. 定时步进到 700ml，吸取固定时间。
 5. 定时步进到 600ml，吸取固定时间。
@@ -228,13 +228,14 @@ Z 轴所有可能从上行切到下行、或从下行切到上行的动作，都
 
 三段喷淋共用同一套 6 泵补偿时间：
 
-- 补偿时间表：`APP_SPRAY_PUMP_MS`
-- 位置：`My/app_config.c`
+- RAM 运行表：`app_spray_pump_ms`
+- 默认时间表：`APP_SPRAY_PUMP_MS`
+- 默认值位置：`My/app_config.c`
 - 下标 `0~5` 对应泵 `1~6`
 - 每段喷淋开始时 6 个泵同时启动，每个泵按自己的补偿时间停止
 - 6 个泵全部停止后，才移动到下一段喷淋位置
 
-喷淋补偿时间不通过串口屏设置。如果需要让 6 个泵喷出量一致，应通过实测修改 `APP_SPRAY_PUMP_MS`。
+喷淋补偿时间可以通过串口屏滑轴修改。`#SET,SPRAY1_MS` 到 `#SET,SPRAY6_MS` 先写入 RAM；点击保存按钮发送 `#SAVE,SPRAY_MS;` 后写入 Flash。MCU 下次初始化时优先读取 Flash 保存值，Flash 无效时才使用 `APP_SPRAY_PUMP_MS` 默认值。
 
 ### 3.6 自动流程中的停止和急停
 
@@ -366,12 +367,26 @@ MCU 默认写这些控件名，定义在 `My/app_config.h`：
 | `n_keep10` | 数值 | 是否预留 10ml |
 | `n_alarm` | 数值 | 报警码 |
 | `j_progress` | 进度条 | 当前定时阶段进度 |
+| `h_spray1_ms` ~ `h_spray6_ms` | 滑轴 | 泵 1~6 喷淋补偿时间 |
+| `n_spray1_ms` ~ `n_spray6_ms` | 数值 | 泵 1~6 喷淋补偿时间 |
+
+Y 轴异常警告页面：
+
+- MCU 默认发送 `page warn`。
+- 页面名由 `My/app_config.h` 的 `APP_SCREEN_WARNING_PAGE` 定义。
+- 当 PG1 在任意 Z 轴动作前或动作中无效，MCU 会报 `Y_NOT_READY`，停止执行机构，并跳转到该页面。
 
 如果 HMI 工程中控件名不同，优先修改：
 
 - `My/app_config.h` 中的 `APP_SCREEN_*_OBJ`
 
 建议 HMI 用 `n_state.val` 和 `n_alarm.val` 做中文界面逻辑，不要依赖 `t6` 的英文短文本。
+
+喷淋补偿时间页面：
+
+- 页面打开时发送 `#GET,SPRAY_MS;`，MCU 会同时回填 6 个滑轴和 6 个数值控件。
+- 滑轴弹起时发送 `#SET,SPRAYx_MS,<value>;`。
+- 保存按钮按下或弹起时发送 `#SAVE,SPRAY_MS;`。
 
 ## 6. 状态码
 
@@ -404,6 +419,7 @@ MCU 默认写这些控件名，定义在 `My/app_config.h`：
 | 4 | `Z_TIMEOUT` | Z 轴到位超时 |
 | 5 | `BAD_COMMAND` | 命令无效 |
 | 6 | `BAD_CONFIG` | 固件体积或喷淋配置错误 |
+| 7 | `SAVE_FAILED` | Flash 保存喷淋补偿时间失败 |
 
 ## 8. 真机调试时最需要修改的地方
 
@@ -526,7 +542,16 @@ const uint16_t APP_SPRAY_FIXED_VOLUME_STAGE3_ML = 800U;
 const PG_ID APP_Y_READY_PG = PG_1;
 ```
 
-当前默认 PG1 有效才允许自动流程继续。如果现场确认应该用 PG2，或未来 Y 轴需要更多位置判断，就从这里扩展。
+当前默认 PG1 有效才允许自动流程继续，也才允许 Z 轴上行、下行、回原点和上电复位动作继续执行。
+
+如果 Z 轴动作前或动作中 PG1 失效，固件会：
+
+- 停止全部蠕动泵。
+- 停止 Z 轴。
+- 报警 `Y_NOT_READY`。
+- 发送 `page warn` 跳转到 HMI 的 `warn` 页面。
+
+如果现场确认应该用 PG2，或未来 Y 轴需要更多位置判断，就从这里扩展。
 
 ### 8.6 修改 Z 轴原点和底部
 
@@ -605,6 +630,8 @@ const uint8_t APP_PUMP_OUT_DIRECTION = MOTOR_REVERSE;
 #define APP_DEFAULT_PUMP_SPEED_PERCENT  60U
 #define APP_Z_SPEED_PERCENT             70U
 
+#define APP_TIME_MIN_MS                 0U
+#define APP_TIME_MAX_MS                 6000U
 #define APP_ASPIRATE_PHASE_MS           5000U
 #define APP_TRIM_10ML_MS                1000U
 #define APP_SPRAY_PUMP1_MS              5000U
@@ -622,7 +649,8 @@ const uint8_t APP_PUMP_OUT_DIRECTION = MOTOR_REVERSE;
 
 说明：
 
-- 屏幕上的 `#SPD`、`#SET,ASP_MS` 和 `#SET,TRIM10_MS` 只在本次上电运行内生效，不保存；喷淋补偿时间不由屏幕设置。
+- 屏幕上的 `#SPD`、`#SET,ASP_MS` 和 `#SET,TRIM10_MS` 只在本次上电运行内生效，不保存。
+- 屏幕上的 `#SET,SPRAY1_MS` 到 `#SET,SPRAY6_MS` 会先修改 RAM，`#SAVE,SPRAY_MS;` 才会把 6 个喷淋补偿时间保存到 Flash。
 - 如果调试后确定了稳定工艺参数，应把默认值写回 `My/app_config.h`。
 - 若 Z 轴实际移动距离很长导致误报超时，调大 `APP_Z_MOVE_TIMEOUT_MS` 或 `APP_HOME_TIMEOUT_MS`。
 - `APP_POWER_ON_RESET_DOWN_MS` 是上电复位开始时的下探时间；如果触发 PG6，会提前结束下探。
@@ -704,6 +732,19 @@ const uint8_t APP_PUMP_OUT_DIRECTION = MOTOR_REVERSE;
 #define APP_SCREEN_KEEP10_OBJ           "n_keep10"
 #define APP_SCREEN_ALARM_OBJ            "n_alarm"
 #define APP_SCREEN_PROGRESS_OBJ         "j_progress"
+#define APP_SCREEN_WARNING_PAGE         "warn"
+#define APP_SCREEN_SPRAY1_SLIDER_OBJ    "h_spray1_ms"
+#define APP_SCREEN_SPRAY2_SLIDER_OBJ    "h_spray2_ms"
+#define APP_SCREEN_SPRAY3_SLIDER_OBJ    "h_spray3_ms"
+#define APP_SCREEN_SPRAY4_SLIDER_OBJ    "h_spray4_ms"
+#define APP_SCREEN_SPRAY5_SLIDER_OBJ    "h_spray5_ms"
+#define APP_SCREEN_SPRAY6_SLIDER_OBJ    "h_spray6_ms"
+#define APP_SCREEN_SPRAY1_VALUE_OBJ     "n_spray1_ms"
+#define APP_SCREEN_SPRAY2_VALUE_OBJ     "n_spray2_ms"
+#define APP_SCREEN_SPRAY3_VALUE_OBJ     "n_spray3_ms"
+#define APP_SCREEN_SPRAY4_VALUE_OBJ     "n_spray4_ms"
+#define APP_SCREEN_SPRAY5_VALUE_OBJ     "n_spray5_ms"
+#define APP_SCREEN_SPRAY6_VALUE_OBJ     "n_spray6_ms"
 ```
 
 如果陶晶驰工程里的控件名不一致，要么改 HMI 控件名，要么改这里。两边必须一致。
@@ -754,6 +795,8 @@ const uint8_t APP_PUMP_OUT_DIRECTION = MOTOR_REVERSE;
 - `#MAN,...;`
 - `#GET,STATE;`
 - `#GET,PG;`
+- `#GET,SPRAY_MS;`
+- `#SAVE,SPRAY_MS;`
 - `#RESET;`
 
 新增协议时必须同步改 `docs/serial_protocol.md`，否则后面 HMI 事件会很容易写错。
@@ -914,5 +957,6 @@ arm-none-eabi-gcc -mcpu=cortex-m3 -mthumb -std=c99 -Wall -Wextra -finput-charset
 - 虚拟体积位置不准优先改 `APP_Z_STEP_DOWN_MS` 和 `APP_Z_STEP_UP_MS`。
 - 第一次喷淋逻辑位置不符合工艺时再改 `APP_VOLUME_POSITIONS`。
 - 第二、第三次喷淋固定体积错了改 `APP_SPRAY_FIXED_VOLUME_STAGE2_ML` 和 `APP_SPRAY_FIXED_VOLUME_STAGE3_ML`。
-- `#SET,ASP_MS`、`#SET,TRIM10_MS` 和 `#SPD` 都不保存，复位后会恢复默认值；喷淋补偿时间是代码内置表。
+- `#SET,ASP_MS`、`#SET,TRIM10_MS` 和 `#SPD` 都不保存，复位后会恢复默认值。
+- `#SET,SPRAY1_MS` 到 `#SET,SPRAY6_MS` 只改 RAM；`#SAVE,SPRAY_MS;` 会保存 6 个喷淋补偿时间到 Flash。
 - 当前没有 10ml 光电位逻辑，预留 10ml 是自动流程结束后的人工补加逻辑。
