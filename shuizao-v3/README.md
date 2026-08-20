@@ -27,7 +27,7 @@
 - 第 2 到第 7 路 DRV8870 控制 6 路蠕动泵。
 - 第 8 路 DRV8870 备用。
 - 6 路蠕动泵当前作为一个泵组，同时同速同向动作。
-- 泵速可通过屏幕设置，范围为 10% 到 100%。
+- 吸取泵速可通过屏幕设置，范围为 10% 到 100%；喷淋泵速使用代码内置值。
 - 喷淋补偿时间可以保存到 Flash；其他运行参数 MCU 复位或断电后恢复默认值。
 - 上电后默认自动复位到最高点，当前最高点为 PG3；屏幕发送 `#RESET;` 软件复位后也会执行同样的上电复位。
 - v3 当前不做校准流程，定时步进参数需要真机实测后写入 `My/app_config.c`。
@@ -109,11 +109,11 @@ Z 轴所有可能从上行切到下行、或从下行切到上行的动作，都
 
 1. 接收 `#START,<volume>,<keep10>;`。
 2. 检查目标体积是否合法。
-3. 根据 `My/app_config.c` 的体积档位表生成本次吸取和喷淋计划。
+3. 根据 `My/app_config.c` 的体积档位表和 `APP_ASPIRATE_STAGES` 吸取阶段表生成本次吸取和喷淋计划。
 4. Z 轴先回原点，当前默认原点为 PG3。
 5. 检查 Y 轴是否在允许工作位置，当前默认要求 PG1 有效；后续所有 Z 轴动作前和动作中也会持续检查 PG1。
-6. 按体积档位从高液位到目标档位逐级移动；200ml/150ml/100ml/50ml 分别用 PG4/PG5/PG6/PG7 确认。
-7. 每到一个吸取档位，6 路蠕动泵按吸取方向运行固定时间。
+6. 先经过 800/700/600/500/400/300ml 虚拟位置，每个位置只停 Z 轴等待，不开泵。
+7. 再进入 200/150/100/50ml 真实 PG 段；下降找 PG 的过程中泵已经开始吸取，到位后继续停留吸取。
 8. 如果启用预留 10ml，执行一次定时补吸。
 9. 执行三段喷淋。
 10. 喷淋结束后自动回原点 PG3。
@@ -138,11 +138,11 @@ Z 轴所有可能从上行切到下行、或从下行切到上行的动作，都
 - PG3 当前作为上限/原点，不参与体积吸取档位。
 - PG7 当前作为 Z 轴 50ml 位置，同时也是下限/底部。
 - 200ml 默认 PG4，150ml 默认 PG5，100ml 默认 PG6，50ml 默认 PG7。
-- 800ml 和 300ml 没有独立传感器，只用于固定喷淋；关键虚拟位置时间默认 `3000ms`，HMI 可在 `1000~20000ms` 范围内调节。
+- 800/700/600/500/400/300ml 没有独立传感器，靠相邻定时移动形成虚拟位置。
 
 ### 3.3 分阶段吸取逻辑
 
-自动吸取不是直接去目标体积，而是从高液位档位开始逐档执行。
+自动吸取不是直接去目标体积，而是先经过 800ml 到 300ml 的虚拟停留段，再从 200ml 开始进入真实 PG 定位吸取段。
 
 例如启动：
 
@@ -154,19 +154,35 @@ Z 轴所有可能从上行切到下行、或从下行切到上行的动作，都
 
 1. 回原点 PG3。
 2. 检查 PG1；如果 PG1 后续在 Z 轴动作中失效，立即停机并跳转到 `warn` 页面。
-3. 从 HOME 向下移动到 PG4，也就是 200ml，吸取固定时间。
-4. 继续向下移动到 PG5，也就是 150ml，吸取固定时间。
-5. 停止吸取，进入喷淋流程。
+3. 依次移动到 800/700/600/500/400/300ml 虚拟位置，每一档只停留默认时间，不开泵。
+4. 从 300ml 向 PG4/200ml 移动，移动过程中 6 路泵开始吸取。
+5. 到 PG4 后继续停留吸取 200ml 段默认时间。
+6. 继续向 PG5/150ml 移动，泵保持吸取不中断。
+7. 到 PG5 后继续停留吸取 150ml 段默认时间。
+8. 停止吸取，进入喷淋流程。
 
-每个吸取阶段使用同一个时间：
+吸取停留时间按阶段分开定义，当前默认全部为 `3000ms`：
 
-- 默认宏：`APP_ASPIRATE_PHASE_MS`
-- 运行时屏幕命令：`#SET,ASP_MS,<time_ms>;`
+| 宏 | 含义 |
+|---|---|
+| `APP_ASP_DWELL_800_MS` | 800ml 虚拟位置停留时间，只停 Z 轴，不开泵 |
+| `APP_ASP_DWELL_700_MS` | 700ml 虚拟位置停留时间，只停 Z 轴，不开泵 |
+| `APP_ASP_DWELL_600_MS` | 600ml 虚拟位置停留时间，只停 Z 轴，不开泵 |
+| `APP_ASP_DWELL_500_MS` | 500ml 虚拟位置停留时间，只停 Z 轴，不开泵 |
+| `APP_ASP_DWELL_400_MS` | 400ml 虚拟位置停留时间，只停 Z 轴，不开泵 |
+| `APP_ASP_DWELL_300_MS` | 300ml 虚拟位置停留时间，只停 Z 轴，不开泵 |
+| `APP_ASP_DWELL_200_MS` | 200ml/PG4 到位后的继续吸取时间 |
+| `APP_ASP_DWELL_150_MS` | 150ml/PG5 到位后的继续吸取时间 |
+| `APP_ASP_DWELL_100_MS` | 100ml/PG6 到位后的继续吸取时间 |
+| `APP_ASP_DWELL_50_MS` | 50ml/PG7 到位后的继续吸取时间 |
 
-每个吸取阶段使用同一个泵速：
+`#SET,ASP_MS,<time_ms>;` 仍保留给旧协议兼容，但新的分阶段吸取默认不再用它决定各档位停留时间。
+
+每个吸取阶段使用同一个吸取泵速：
 
 - 默认宏：`APP_DEFAULT_PUMP_SPEED_PERCENT`
 - 运行时屏幕命令：`#SPD,<percent>;`
+- `#SPD` 只影响吸取和预留 10ml 补吸，不影响喷淋。
 
 ### 3.4 预留 10ml 的当前逻辑
 
@@ -275,7 +291,7 @@ Z 轴所有可能从上行切到下行、或从下行切到上行的动作，都
 
 - 上升到 PG3 自动停止。
 - 下降到 PG7 自动停止，PG7 同时是 50ml 和下限位。
-- 速度参数仍按百分比处理，低于 10% 会夹到 10%。
+- 吸取速度参数仍按百分比处理，低于 10% 会夹到 10%。
 
 陶晶驰按钮建议：
 
@@ -358,7 +374,7 @@ MCU 默认写这些控件名，定义在 `My/app_config.h`：
 | `t6` | 文本 | MCU 状态短文本 |
 | `n_state` | 数值 | MCU 状态码 |
 | `n_phase` | 数值 | 当前阶段号 |
-| `n_speed` | 数值 | 当前泵速百分比 |
+| `n_speed` | 数值 | 当前吸取泵速百分比 |
 | `n_pgmask` | 数值 | PG 有效掩码 |
 | `n_keep10` | 数值 | 是否预留 10ml |
 | `n_alarm` | 数值 | 报警码 |
@@ -619,11 +635,22 @@ const uint8_t APP_PUMP_OUT_DIRECTION = MOTOR_REVERSE;
 #define APP_MIN_PUMP_SPEED_PERCENT      10U
 #define APP_MAX_PUMP_SPEED_PERCENT      100U
 #define APP_DEFAULT_PUMP_SPEED_PERCENT  60U
+#define APP_SPRAY_SPEED_PERCENT         100U
 #define APP_Z_SPEED_PERCENT             70U
 
 #define APP_TIME_MIN_MS                 0U
 #define APP_TIME_MAX_MS                 6000U
 #define APP_ASPIRATE_PHASE_MS           5000U
+#define APP_ASP_DWELL_800_MS            3000U
+#define APP_ASP_DWELL_700_MS            3000U
+#define APP_ASP_DWELL_600_MS            3000U
+#define APP_ASP_DWELL_500_MS            3000U
+#define APP_ASP_DWELL_400_MS            3000U
+#define APP_ASP_DWELL_300_MS            3000U
+#define APP_ASP_DWELL_200_MS            3000U
+#define APP_ASP_DWELL_150_MS            3000U
+#define APP_ASP_DWELL_100_MS            3000U
+#define APP_ASP_DWELL_50_MS             3000U
 #define APP_TRIM_10ML_MS                1000U
 #define APP_SPRAY_PUMP1_MS              5000U
 #define APP_SPRAY_PUMP2_MS              5000U
@@ -645,6 +672,7 @@ const uint8_t APP_PUMP_OUT_DIRECTION = MOTOR_REVERSE;
 说明：
 
 - 屏幕上的 `#SPD`、`#SET,ASP_MS` 和 `#SET,TRIM10_MS` 只在本次上电运行内生效，不保存。
+- `#SPD` 只改变自动吸取速度；自动喷淋速度固定使用 `APP_SPRAY_SPEED_PERCENT`。
 - 屏幕上的 `#SET,SPRAY1_MS,<time_ms>,<volume>` 到 `#SET,SPRAY6_MS,<time_ms>,<volume>` 会先修改指定体积档位的 RAM，`#SAVE,SPRAY_MS;` 才会把 4 个档位共 24 个喷淋补偿时间保存到 Flash。
 - 屏幕上的 `#SET,Z_DN_HOME_800_MS,<time_ms>`、`#SET,Z_DN_800_300_MS,<time_ms>`、`#SET,Z_UP_300_800_MS,<time_ms>`、`#SET,Z_UP_200_300_MS,<time_ms>` 会先修改 RAM，`#SAVE,ZVIRT_MS;` 或 `#SAVE,ALL;` 写入 Flash。
 - 如果调试后确定了稳定工艺参数，应把默认值写回 `My/app_config.h`。
@@ -907,17 +935,17 @@ return PG_ReadRaw(id) == GPIO_PIN_RESET;
 当前实现有几个有意保留的限制：
 
 - 6 路泵不区分泵组，全部同时运行。
-- 每个吸取阶段使用同一个时间和同一个泵速。
+- 吸取停留时间已经按 800/700/600/500/400/300/200/150/100/50 分开写成代码默认值，暂不支持 HMI 调节和 Flash 保存。
 - 同一个自动体积档位内部，三段喷淋共用该档位的 6 泵补偿时间。
-- `precise_aspirate` 字段已经在体积表中预留，但当前未做独立定位吸取动作。
+- 真实 PG 段的定位吸取已由 `APP_ASPIRATE_STAGES` 控制，`precise_aspirate` 字段保留但当前不作为主流程判断依据。
 - `keep10` 不保存，每次 START 时由屏幕传入。
-- 运行时设置的速度和时间不保存。
+- 运行时设置的吸取速度和旧版 `ASP_MS` 不保存。
 - 当前没有自动校准流程。
 
 如果后续要扩展：
 
 - 单泵或分泵组控制：扩展 `My/pump.c` 和协议。
-- 定位吸取独立动作：在 `My/app.c` 根据 `precise_aspirate` 增加状态。
+- HMI 调节吸取分段时间：为 `APP_ASP_DWELL_800_MS` 到 `APP_ASP_DWELL_50_MS` 增加协议、控件回填和 Flash 保存。
 - 更多参数保存：继续扩展 Flash/EEPROM 保存层，并定义保存/恢复协议。
 - 更复杂的 Y 轴流程：扩展 `APP_Y_READY_PG` 为 Y 轴位置表。
 - 更多体积档位：扩展 `APP_VOLUME_POSITIONS`，同时确认 `APP_MAX_AUTO_PHASES` 足够。
@@ -954,5 +982,6 @@ arm-none-eabi-gcc -mcpu=cortex-m3 -mthumb -std=c99 -Wall -Wextra -finput-charset
 - 第一次喷淋逻辑位置不符合工艺时再改 `APP_VOLUME_POSITIONS`。
 - 第二、第三次喷淋固定位置错了改 `APP_SPRAY_FIXED_STAGE2_POS` 和 `APP_SPRAY_FIXED_STAGE3_POS`。
 - `#SET,ASP_MS`、`#SET,TRIM10_MS` 和 `#SPD` 都不保存，复位后会恢复默认值。
+- `#SPD` 不影响喷淋；喷淋速度需要修改 `APP_SPRAY_SPEED_PERCENT` 后重新烧录。
 - `#SET,SPRAY1_MS,<time_ms>,<volume>` 到 `#SET,SPRAY6_MS,<time_ms>,<volume>` 只改指定体积档位的 RAM；`#SAVE,SPRAY_MS;` 会保存 4 个档位共 24 个喷淋补偿时间到 Flash。
 - 当前没有 10ml 光电位逻辑，预留 10ml 是自动流程结束后的人工补加逻辑。

@@ -23,10 +23,14 @@ extern "C" {
 #define APP_MAX_AUTO_PHASES             12U
 #define APP_SPRAY_STAGE_COUNT           3U
 
-/* Z 轴逻辑位置：HOME/200/150/100/50 有真实传感器，800/300 为定时虚拟喷淋位置。 */
+/* Z 轴逻辑位置：HOME/200/150/100/50 有真实传感器，其余为定时虚拟位置。 */
 typedef enum {
     APP_Z_POS_HOME = 0,
     APP_Z_POS_800ML,
+    APP_Z_POS_700ML,
+    APP_Z_POS_600ML,
+    APP_Z_POS_500ML,
+    APP_Z_POS_400ML,
     APP_Z_POS_300ML,
     APP_Z_POS_200ML,
     APP_Z_POS_150ML,
@@ -35,7 +39,7 @@ typedef enum {
     APP_Z_POS_INVALID = 0xFF
 } App_ZPosition;
 
-#define APP_Z_POSITION_COUNT            7U
+#define APP_Z_POSITION_COUNT            11U
 #define APP_Z_STEP_COUNT                (APP_Z_POSITION_COUNT - 1U)
 
 /* 预留给科研人员人工清洗接液烧杯的体积。固件不保存该选项，每次由屏幕 START 命令携带。 */
@@ -45,6 +49,7 @@ typedef enum {
 #define APP_MIN_PUMP_SPEED_PERCENT      10U
 #define APP_MAX_PUMP_SPEED_PERCENT      100U
 #define APP_DEFAULT_PUMP_SPEED_PERCENT  60U
+#define APP_SPRAY_SPEED_PERCENT         100U
 
 /* Z 轴默认运动速度百分比。若上机后发现过快或过慢，优先改这里。 */
 #define APP_Z_SPEED_PERCENT             70U
@@ -53,6 +58,16 @@ typedef enum {
 #define APP_TIME_MIN_MS                 0U
 #define APP_TIME_MAX_MS                 6000U
 #define APP_ASPIRATE_PHASE_MS           5000U
+#define APP_ASP_DWELL_800_MS            3000U
+#define APP_ASP_DWELL_700_MS            3000U
+#define APP_ASP_DWELL_600_MS            3000U
+#define APP_ASP_DWELL_500_MS            3000U
+#define APP_ASP_DWELL_400_MS            3000U
+#define APP_ASP_DWELL_300_MS            3000U
+#define APP_ASP_DWELL_200_MS            3000U
+#define APP_ASP_DWELL_150_MS            3000U
+#define APP_ASP_DWELL_100_MS            3000U
+#define APP_ASP_DWELL_50_MS             3000U
 #define APP_TRIM_10ML_MS                1000U
 #define APP_SPRAY_PUMP1_MS              5000U
 #define APP_SPRAY_PUMP2_MS              5000U
@@ -152,6 +167,15 @@ typedef struct {
     uint8_t precise_aspirate;
 } App_VolumePosition;
 
+/* 自动吸取阶段。虚拟位置只停留不吸取；真实 PG 位置移动定位时开始吸取，到位后继续停留吸取。 */
+typedef struct {
+    uint16_t volume_ml;
+    App_ZPosition pos;
+    uint32_t dwell_ms;
+    uint8_t pump_during_move;
+    uint8_t pump_during_dwell;
+} App_AspirateStage;
+
 /* 设备映射：Z 轴、电机方向、蠕动泵编号都集中由 app_config.c 定义。 */
 extern const Motor_ID APP_Z_MOTOR_ID;
 extern const Motor_ID APP_PUMP_MOTOR_IDS[APP_PUMP_COUNT];
@@ -181,6 +205,10 @@ extern const uint32_t APP_Z_STEP_UP_MS[APP_Z_STEP_COUNT];
 /* 自动吸取体积档位表，按从高液位到低液位的顺序排列。 */
 extern const App_VolumePosition APP_VOLUME_POSITIONS[];
 extern const uint8_t APP_VOLUME_POSITION_COUNT;
+
+/* 自动吸取阶段表，按从高液位到低液位排列。 */
+extern const App_AspirateStage APP_ASPIRATE_STAGES[];
+extern const uint8_t APP_ASPIRATE_STAGE_COUNT;
 
 /* 第二、第三次喷淋使用固定虚拟位置。 */
 extern const App_ZPosition APP_SPRAY_FIXED_STAGE2_POS;

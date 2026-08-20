@@ -30,7 +30,7 @@ static App_Alarm app_alarm = APP_ALARM_NONE;
 /* 当前自动任务参数。预留 10ml 只作为流程后的人工确认步骤，不再依赖 10ml 光电位。 */
 static uint8_t app_keep10 = 0U;
 static uint16_t app_manual_reserved_ml = 0U;
-static uint8_t app_pump_speed_percent = APP_DEFAULT_PUMP_SPEED_PERCENT;
+static uint8_t app_aspirate_speed_percent = APP_DEFAULT_PUMP_SPEED_PERCENT;
 
 /* HMI 可临时修改的工艺时间；吸取和 10ml 补吸不写入 Flash，断电或复位后恢复默认值。 */
 static uint32_t app_aspirate_phase_ms = APP_ASPIRATE_PHASE_MS;
@@ -45,6 +45,9 @@ static uint32_t app_zvirt_ms[APP_ZVIRT_COUNT];
 
 /* START 后按体积档位表生成本次自动流程的吸取和喷淋目标。 */
 static App_ZPosition app_aspirate_sequence[APP_MAX_AUTO_PHASES];
+static uint32_t app_aspirate_dwell_sequence[APP_MAX_AUTO_PHASES];
+static uint8_t app_aspirate_move_pump_sequence[APP_MAX_AUTO_PHASES];
+static uint8_t app_aspirate_dwell_pump_sequence[APP_MAX_AUTO_PHASES];
 static uint8_t app_aspirate_phase_count = 0U;
 static App_ZPosition app_spray_sequence[APP_SPRAY_STAGE_COUNT];
 static uint8_t app_spray_phase_count = 0U;
@@ -107,6 +110,14 @@ static uint16_t App_ZPosVolumeMl(App_ZPosition pos)
     switch (pos) {
     case APP_Z_POS_800ML:
         return 800U;
+    case APP_Z_POS_700ML:
+        return 700U;
+    case APP_Z_POS_600ML:
+        return 600U;
+    case APP_Z_POS_500ML:
+        return 500U;
+    case APP_Z_POS_400ML:
+        return 400U;
     case APP_Z_POS_300ML:
         return 300U;
     case APP_Z_POS_200ML:
@@ -421,6 +432,7 @@ static bool App_BuildAutoPlan(uint16_t volume_ml, uint8_t keep10)
     int8_t requested_index;
     int8_t base_index;
     int8_t spray_profile_index;
+    uint16_t target_stage_volume_ml;
 
     requested_index = App_FindVolumeIndex(volume_ml);
     if (requested_index < 0 || volume_ml <= reserved_ml) {
@@ -439,12 +451,23 @@ static bool App_BuildAutoPlan(uint16_t volume_ml, uint8_t keep10)
     }
 
     app_aspirate_phase_count = 0U;
-    for (uint8_t i = 0U; i <= (uint8_t)base_index; i++) {
-        App_ZPosition pos = APP_VOLUME_POSITIONS[i].aspirate_pos;
-        if (app_aspirate_phase_count >= APP_MAX_AUTO_PHASES || !App_ZPosIsValid(pos)) {
+    target_stage_volume_ml = APP_VOLUME_POSITIONS[(uint8_t)base_index].volume_ml;
+    for (uint8_t i = 0U; i < APP_ASPIRATE_STAGE_COUNT; i++) {
+        const App_AspirateStage *stage = &APP_ASPIRATE_STAGES[i];
+
+        if (stage->volume_ml < target_stage_volume_ml) {
+            continue;
+        }
+
+        if (app_aspirate_phase_count >= APP_MAX_AUTO_PHASES || !App_ZPosIsValid(stage->pos)) {
             return false;
         }
-        app_aspirate_sequence[app_aspirate_phase_count++] = pos;
+
+        app_aspirate_sequence[app_aspirate_phase_count] = stage->pos;
+        app_aspirate_dwell_sequence[app_aspirate_phase_count] = App_ClampProcessTimeMs(stage->dwell_ms);
+        app_aspirate_move_pump_sequence[app_aspirate_phase_count] = stage->pump_during_move ? 1U : 0U;
+        app_aspirate_dwell_pump_sequence[app_aspirate_phase_count] = stage->pump_during_dwell ? 1U : 0U;
+        app_aspirate_phase_count++;
     }
 
     app_spray_phase_count = APP_SPRAY_STAGE_COUNT;
@@ -674,6 +697,22 @@ static void App_EnterMoveState(App_State state, App_ZPosition target)
     App_StartZMoveTo(target);
 }
 
+static void App_EnterAspirateMove(uint8_t phase_index)
+{
+    if (phase_index >= app_aspirate_phase_count) {
+        return;
+    }
+
+    if (app_aspirate_move_pump_sequence[phase_index]) {
+        Pump_RunAll(PUMP_DIR_IN, app_aspirate_speed_percent);
+    } else {
+        Pump_StopAll();
+    }
+
+    App_EnterMoveState(APP_STATE_MOVE_TO_ASPIRATE,
+                       app_aspirate_sequence[phase_index]);
+}
+
 static void App_StartPowerResetHomeSeek(void)
 {
     app_power_reset_phase = APP_POWER_RESET_PHASE_UP;
@@ -882,8 +921,8 @@ static uint8_t App_ProgressPercent(void)
     uint32_t duration = 0U;
     uint32_t elapsed;
 
-    if (app_state == APP_STATE_ASPIRATING) {
-        duration = app_aspirate_phase_ms;
+    if (app_state == APP_STATE_ASPIRATING && app_phase_index < app_aspirate_phase_count) {
+        duration = app_aspirate_dwell_sequence[app_phase_index];
     } else if (app_state == APP_STATE_TRIM_ASPIRATING) {
         duration = app_trim10_ms;
     } else if (app_state == APP_STATE_SPRAYING && app_phase_index < app_spray_phase_count) {
@@ -915,7 +954,7 @@ static void App_ReportStatus(bool force)
     Screen_ShowMessage(App_StateText(app_state));
     Screen_UpdateStatus((uint8_t)app_state,
                         App_DisplayPhase(),
-                        app_pump_speed_percent,
+                        app_aspirate_speed_percent,
                         PG_ReadMask(),
                         app_keep10,
                         (uint16_t)app_alarm,
@@ -966,7 +1005,7 @@ static void App_StartAuto(uint16_t volume_ml, uint8_t keep10)
                     app_aspirate_phase_count,
                     app_spray_phase_count,
                     app_has_trim10,
-                    app_pump_speed_percent);
+                    app_aspirate_speed_percent);
     App_EnterMoveState(APP_STATE_HOMING, APP_Z_POS_HOME);
     App_ReportStatus(true);
 }
@@ -999,7 +1038,7 @@ static void App_HandleManual(const Protocol_Command *command)
 
     /* 手动命令未带速度时使用当前全局泵速。 */
     if (speed == 0U) {
-        speed = app_pump_speed_percent;
+        speed = app_aspirate_speed_percent;
     }
     speed = Pump_ClampSpeedPercent(speed);
 
@@ -1253,9 +1292,9 @@ static void App_HandleCommand(const Protocol_Command *command)
         break;
 
     case PROTOCOL_CMD_SPEED_SET:
-        app_pump_speed_percent = Pump_ClampSpeedPercent(command->speed_percent);
+        app_aspirate_speed_percent = Pump_ClampSpeedPercent(command->speed_percent);
         app_alarm = APP_ALARM_NONE;
-        Logger_Value("SET", "speed", app_pump_speed_percent);
+        Logger_Value("SET", "aspirate_speed", app_aspirate_speed_percent);
         App_ReportStatus(true);
         break;
 
@@ -1383,13 +1422,13 @@ static void App_StartSprayPumps(void)
                       app_spray_phase_count,
                       (uint8_t)app_spray_sequence[app_phase_index],
                       App_GetSprayMaxMs(),
-                      app_pump_speed_percent,
+                      Pump_ClampSpeedPercent(APP_SPRAY_SPEED_PERCENT),
                       PG_ReadMask());
 
     /* 三段喷淋共用当前启动体积对应的 6 泵补偿时间：同开，按各自时间分别停止。 */
     for (uint8_t i = 0U; i < APP_PUMP_COUNT; i++) {
         if (spray_ms[i] > 0U) {
-            Pump_RunOne(i, PUMP_DIR_OUT, app_pump_speed_percent);
+            Pump_RunOne(i, PUMP_DIR_OUT, Pump_ClampSpeedPercent(APP_SPRAY_SPEED_PERCENT));
             app_spray_active_pump_mask |= (uint8_t)(1U << i);
         } else {
             Pump_StopOne(i);
@@ -1471,8 +1510,7 @@ static void App_TaskAuto(void)
         if (PG_IsActive(APP_Y_READY_PG)) {
             app_phase_index = 0U;
             Logger_Info("AUTO", "y_ready");
-            App_EnterMoveState(APP_STATE_MOVE_TO_ASPIRATE,
-                               app_aspirate_sequence[app_phase_index]);
+            App_EnterAspirateMove(app_phase_index);
         } else {
             Logger_Info("AUTO", "y_not_ready");
             App_Fail(APP_ALARM_Y_NOT_READY);
@@ -1486,10 +1524,14 @@ static void App_TaskAuto(void)
                               (uint8_t)(app_phase_index + 1U),
                               app_aspirate_phase_count,
                               (uint8_t)app_aspirate_sequence[app_phase_index],
-                              app_aspirate_phase_ms,
-                              app_pump_speed_percent,
+                              app_aspirate_dwell_sequence[app_phase_index],
+                              app_aspirate_speed_percent,
                               PG_ReadMask());
-            Pump_RunAll(PUMP_DIR_IN, app_pump_speed_percent);
+            if (app_aspirate_dwell_pump_sequence[app_phase_index]) {
+                Pump_RunAll(PUMP_DIR_IN, app_aspirate_speed_percent);
+            } else {
+                Pump_StopAll();
+            }
             App_SetState(APP_STATE_ASPIRATING);
         } else if (App_MoveTimedOut()) {
             App_Fail(APP_ALARM_Z_TIMEOUT);
@@ -1497,17 +1539,14 @@ static void App_TaskAuto(void)
         break;
 
     case APP_STATE_ASPIRATING:
-        /* 每个吸取阶段使用同一固定时间、同一全局泵速。 */
-        if (Elapsed(app_state_start_tick) >= app_aspirate_phase_ms) {
-            Pump_StopAll();
+        if (Elapsed(app_state_start_tick) >= app_aspirate_dwell_sequence[app_phase_index]) {
             Logger_PhaseDone("ASP",
                              (uint8_t)(app_phase_index + 1U),
                              Elapsed(app_state_start_tick),
                              PG_ReadMask());
             app_phase_index++;
             if (app_phase_index < app_aspirate_phase_count) {
-                App_EnterMoveState(APP_STATE_MOVE_TO_ASPIRATE,
-                                   app_aspirate_sequence[app_phase_index]);
+                App_EnterAspirateMove(app_phase_index);
             } else if (app_has_trim10) {
                 /* 目标体积减 10ml 时没有独立 PG，当前以定时补吸作为占位实现。 */
                 Logger_PhaseStart("TRIM10",
@@ -1515,11 +1554,12 @@ static void App_TaskAuto(void)
                                   (uint8_t)(app_aspirate_phase_count + 1U),
                                   (uint8_t)app_target_pos,
                                   app_trim10_ms,
-                                  app_pump_speed_percent,
+                                  app_aspirate_speed_percent,
                                   PG_ReadMask());
-                Pump_RunAll(PUMP_DIR_IN, app_pump_speed_percent);
+                Pump_RunAll(PUMP_DIR_IN, app_aspirate_speed_percent);
                 App_SetState(APP_STATE_TRIM_ASPIRATING);
             } else {
+                Pump_StopAll();
                 App_StartSprayPhaseZero();
             }
         }
@@ -1597,7 +1637,7 @@ void App_Init(void)
 
     app_state = APP_STATE_IDLE;
     app_alarm = APP_ALARM_NONE;
-    app_pump_speed_percent = Pump_ClampSpeedPercent(APP_DEFAULT_PUMP_SPEED_PERCENT);
+    app_aspirate_speed_percent = Pump_ClampSpeedPercent(APP_DEFAULT_PUMP_SPEED_PERCENT);
     app_aspirate_phase_ms = App_ClampProcessTimeMs(APP_ASPIRATE_PHASE_MS);
     app_trim10_ms = App_ClampProcessTimeMs(APP_TRIM_10ML_MS);
     App_LoadDefaultSprayTimes();
@@ -1649,7 +1689,7 @@ App_State App_GetState(void)
 
 uint8_t App_GetPumpSpeedPercent(void)
 {
-    return app_pump_speed_percent;
+    return app_aspirate_speed_percent;
 }
 
 uint16_t App_GetPGMask(void)

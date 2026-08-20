@@ -50,13 +50,17 @@ const uint8_t APP_Z_ORDER_COUNT = sizeof(APP_Z_ORDER) / sizeof(APP_Z_ORDER[0]);
  * Z 轴相邻逻辑位置步进时间。
  * down[i] 表示从位置 i 到 i+1；up[i] 表示从位置 i+1 回到 i。
  * 逻辑顺序：
- * HOME, 800, 300, 200, 150, 100, 50
- * 其中 800ml 和 300ml 没有独立传感器，靠相邻步进时间到达。
+ * HOME, 800, 700, 600, 500, 400, 300, 200, 150, 100, 50
+ * 其中 800ml 到 300ml 没有独立传感器，靠相邻步进时间到达。
  * 真实调试时先用手动低速确认方向，再逐段实测并修改这两个表。
  */
 const uint32_t APP_Z_STEP_DOWN_MS[APP_Z_STEP_COUNT] = {
     APP_Z_STEP_DEFAULT_MS, /* HOME -> 800 */
-    APP_Z_STEP_DEFAULT_MS, /* 800  -> 300 */
+    APP_Z_STEP_DEFAULT_MS, /* 800  -> 700 */
+    APP_Z_STEP_DEFAULT_MS, /* 700  -> 600 */
+    APP_Z_STEP_DEFAULT_MS, /* 600  -> 500 */
+    APP_Z_STEP_DEFAULT_MS, /* 500  -> 400 */
+    APP_Z_STEP_DEFAULT_MS, /* 400  -> 300 */
     APP_Z_STEP_DEFAULT_MS, /* 300  -> 200，200ml 用 PG4 最终确认 */
     APP_Z_STEP_DEFAULT_MS, /* 200  -> 150，150ml 用 PG5 最终确认 */
     APP_Z_STEP_DEFAULT_MS, /* 150  -> 100，100ml 用 PG6 最终确认 */
@@ -65,7 +69,11 @@ const uint32_t APP_Z_STEP_DOWN_MS[APP_Z_STEP_COUNT] = {
 
 const uint32_t APP_Z_STEP_UP_MS[APP_Z_STEP_COUNT] = {
     APP_Z_STEP_DEFAULT_MS, /* 800  -> HOME，HOME 用 PG3 最终确认 */
-    APP_Z_STEP_DEFAULT_MS, /* 300  -> 800 */
+    APP_Z_STEP_DEFAULT_MS, /* 700  -> 800 */
+    APP_Z_STEP_DEFAULT_MS, /* 600  -> 700 */
+    APP_Z_STEP_DEFAULT_MS, /* 500  -> 600 */
+    APP_Z_STEP_DEFAULT_MS, /* 400  -> 500 */
+    APP_Z_STEP_DEFAULT_MS, /* 300  -> 400 */
     APP_Z_STEP_DEFAULT_MS, /* 200  -> 300 */
     APP_Z_STEP_DEFAULT_MS, /* 150  -> 200，200ml 用 PG4 最终确认 */
     APP_Z_STEP_DEFAULT_MS, /* 100  -> 150，150ml 用 PG5 最终确认 */
@@ -88,6 +96,26 @@ const App_VolumePosition APP_VOLUME_POSITIONS[] = {
 };
 const uint8_t APP_VOLUME_POSITION_COUNT =
     sizeof(APP_VOLUME_POSITIONS) / sizeof(APP_VOLUME_POSITIONS[0]);
+
+/*
+ * 分阶段吸取表：
+ * - 800ml 到 300ml 是虚拟停留段，只停 Z 轴，不开泵。
+ * - 200ml 到 50ml 是真实 PG 定位段，下降找 PG 时开泵，到位后继续按本段 dwell_ms 吸取。
+ */
+const App_AspirateStage APP_ASPIRATE_STAGES[] = {
+    {800U, APP_Z_POS_800ML, APP_ASP_DWELL_800_MS, 0U, 0U},
+    {700U, APP_Z_POS_700ML, APP_ASP_DWELL_700_MS, 0U, 0U},
+    {600U, APP_Z_POS_600ML, APP_ASP_DWELL_600_MS, 0U, 0U},
+    {500U, APP_Z_POS_500ML, APP_ASP_DWELL_500_MS, 0U, 0U},
+    {400U, APP_Z_POS_400ML, APP_ASP_DWELL_400_MS, 0U, 0U},
+    {300U, APP_Z_POS_300ML, APP_ASP_DWELL_300_MS, 0U, 0U},
+    {200U, APP_Z_POS_200ML, APP_ASP_DWELL_200_MS, 1U, 1U},
+    {150U, APP_Z_POS_150ML, APP_ASP_DWELL_150_MS, 1U, 1U},
+    {100U, APP_Z_POS_100ML, APP_ASP_DWELL_100_MS, 1U, 1U},
+    {50U,  APP_Z_POS_50ML,  APP_ASP_DWELL_50_MS,  1U, 1U},
+};
+const uint8_t APP_ASPIRATE_STAGE_COUNT =
+    sizeof(APP_ASPIRATE_STAGES) / sizeof(APP_ASPIRATE_STAGES[0]);
 
 /* 第二次固定 300ml 虚拟位置喷淋，第三次固定 800ml 虚拟位置喷淋。 */
 const App_ZPosition APP_SPRAY_FIXED_STAGE2_POS = APP_Z_POS_300ML;
