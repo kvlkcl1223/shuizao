@@ -16,29 +16,26 @@ extern "C" {
 #include <stdint.h>
 
 #define APP_PUMP_COUNT 6U
+#define APP_SPRAY_PROFILE_COUNT         4U
+#define APP_ZVIRT_COUNT                 4U
 
-/* 自动流程最多经过的吸取阶段数量。当前体积表最多 10 个阶段，预留余量方便后续增档。 */
+/* 自动流程最多经过的吸取阶段数量。当前体积表最多 4 个阶段，预留余量方便后续增档。 */
 #define APP_MAX_AUTO_PHASES             12U
 #define APP_SPRAY_STAGE_COUNT           3U
 
-/* Z 轴逻辑位置：只有 HOME/100ml/50ml/BOTTOM 有真实传感器，其余位置靠相邻步进定时到达。 */
+/* Z 轴逻辑位置：HOME/200/150/100/50 有真实传感器，800/300 为定时虚拟喷淋位置。 */
 typedef enum {
     APP_Z_POS_HOME = 0,
     APP_Z_POS_800ML,
-    APP_Z_POS_700ML,
-    APP_Z_POS_600ML,
-    APP_Z_POS_500ML,
-    APP_Z_POS_400ML,
     APP_Z_POS_300ML,
     APP_Z_POS_200ML,
     APP_Z_POS_150ML,
     APP_Z_POS_100ML,
     APP_Z_POS_50ML,
-    APP_Z_POS_BOTTOM,
     APP_Z_POS_INVALID = 0xFF
 } App_ZPosition;
 
-#define APP_Z_POSITION_COUNT            12U
+#define APP_Z_POSITION_COUNT            7U
 #define APP_Z_STEP_COUNT                (APP_Z_POSITION_COUNT - 1U)
 
 /* 预留给科研人员人工清洗接液烧杯的体积。固件不保存该选项，每次由屏幕 START 命令携带。 */
@@ -74,8 +71,13 @@ typedef enum {
  */
 #define APP_Z_REVERSE_DEADTIME_MS       300U
 
-/* 其余虚拟体积位置的相邻步进默认时间。真实调试时优先修改 app_config.c 的两个时间表。 */
-#define APP_Z_STEP_DEFAULT_MS           1000U
+/* Z 轴虚拟位置步进时间由 HMI 调试，范围独立于喷淋泵时间。 */
+#define APP_ZVIRT_TIME_MIN_MS           1000U
+#define APP_ZVIRT_TIME_MAX_MS           20000U
+#define APP_ZVIRT_TIME_DEFAULT_MS       3000U
+
+/* 其余相邻步进默认时间。真实调试时优先修改 app_config.c 的两个时间表。 */
+#define APP_Z_STEP_DEFAULT_MS           APP_ZVIRT_TIME_DEFAULT_MS
 
 /* 上电后是否自动复位到最高点。最高点由 APP_Z_HOME_PG 决定，当前默认 PG3。 */
 #define APP_POWER_ON_RESET_ENABLE       1U
@@ -122,6 +124,18 @@ typedef enum {
 #define APP_SCREEN_SPRAY4_VALUE_OBJ     "n_spray4_ms"
 #define APP_SCREEN_SPRAY5_VALUE_OBJ     "n_spray5_ms"
 #define APP_SCREEN_SPRAY6_VALUE_OBJ     "n_spray6_ms"
+#define APP_SCREEN_SPRAY_VOLUME_VALUE_OBJ "n_spray_vol"
+#define APP_SCREEN_SPRAY_VOLUME_TEXT_OBJ  "t_spray_vol"
+
+/* Z 轴虚拟位置调试控件。 */
+#define APP_SCREEN_Z_DN_HOME_800_SLIDER_OBJ "h_zd_h8"
+#define APP_SCREEN_Z_DN_800_300_SLIDER_OBJ  "h_zd_83"
+#define APP_SCREEN_Z_UP_300_800_SLIDER_OBJ  "h_zu_38"
+#define APP_SCREEN_Z_UP_200_300_SLIDER_OBJ  "h_zu_23"
+#define APP_SCREEN_Z_DN_HOME_800_VALUE_OBJ  "n_zd_h8"
+#define APP_SCREEN_Z_DN_800_300_VALUE_OBJ   "n_zd_83"
+#define APP_SCREEN_Z_UP_300_800_VALUE_OBJ   "n_zu_38"
+#define APP_SCREEN_Z_UP_200_300_VALUE_OBJ   "n_zu_23"
 
 /*
  * 参数保存 Flash 页。
@@ -150,6 +164,8 @@ extern const uint8_t APP_PUMP_OUT_DIRECTION;
 /* 关键 PG 位置。PG 为低电平有效，实际顺序不确定时只改 app_config.c。 */
 extern const PG_ID APP_Y_READY_PG;
 extern const PG_ID APP_Z_HOME_PG;
+extern const PG_ID APP_Z_200ML_PG;
+extern const PG_ID APP_Z_150ML_PG;
 extern const PG_ID APP_Z_100ML_PG;
 extern const PG_ID APP_Z_50ML_PG;
 extern const PG_ID APP_Z_BOTTOM_PG;
@@ -166,9 +182,10 @@ extern const uint32_t APP_Z_STEP_UP_MS[APP_Z_STEP_COUNT];
 extern const App_VolumePosition APP_VOLUME_POSITIONS[];
 extern const uint8_t APP_VOLUME_POSITION_COUNT;
 
-/* 第二、第三次喷淋使用固定体积档位。 */
-extern const uint16_t APP_SPRAY_FIXED_VOLUME_STAGE2_ML;
-extern const uint16_t APP_SPRAY_FIXED_VOLUME_STAGE3_ML;
+/* 第二、第三次喷淋使用固定虚拟位置。 */
+extern const App_ZPosition APP_SPRAY_FIXED_STAGE2_POS;
+extern const App_ZPosition APP_SPRAY_FIXED_STAGE3_POS;
+extern const uint16_t APP_SPRAY_PROFILE_VOLUMES[APP_SPRAY_PROFILE_COUNT];
 extern const uint32_t APP_SPRAY_PUMP_MS[APP_PUMP_COUNT];
 
 #ifdef __cplusplus

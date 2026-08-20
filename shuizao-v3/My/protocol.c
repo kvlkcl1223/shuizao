@@ -157,8 +157,9 @@ static void ParseManual(char **tokens, uint8_t token_count)
 static void ParseSet(char **tokens, uint8_t token_count)
 {
     Protocol_Command command;
+    bool is_spray_param = false;
 
-    /* 工艺时间设置格式：#SET,ASP_MS,5000;，只保存在本次上电运行内。 */
+    /* 工艺时间设置格式：#SET,ASP_MS,5000;，喷淋时间设置格式：#SET,SPRAY1_MS,3500,100;。 */
     if (token_count < 3U) {
         return;
     }
@@ -174,21 +175,41 @@ static void ParseSet(char **tokens, uint8_t token_count)
         command.param_target = PROTOCOL_PARAM_TRIM10_MS;
     } else if (StringEquals(tokens[1], "SPRAY1_MS")) {
         command.param_target = PROTOCOL_PARAM_SPRAY1_MS;
+        is_spray_param = true;
     } else if (StringEquals(tokens[1], "SPRAY2_MS")) {
         command.param_target = PROTOCOL_PARAM_SPRAY2_MS;
+        is_spray_param = true;
     } else if (StringEquals(tokens[1], "SPRAY3_MS")) {
         command.param_target = PROTOCOL_PARAM_SPRAY3_MS;
+        is_spray_param = true;
     } else if (StringEquals(tokens[1], "SPRAY4_MS")) {
         command.param_target = PROTOCOL_PARAM_SPRAY4_MS;
+        is_spray_param = true;
     } else if (StringEquals(tokens[1], "SPRAY5_MS")) {
         command.param_target = PROTOCOL_PARAM_SPRAY5_MS;
+        is_spray_param = true;
     } else if (StringEquals(tokens[1], "SPRAY6_MS")) {
         command.param_target = PROTOCOL_PARAM_SPRAY6_MS;
+        is_spray_param = true;
+    } else if (StringEquals(tokens[1], "Z_DN_HOME_800_MS")) {
+        command.param_target = PROTOCOL_PARAM_Z_DN_HOME_800_MS;
+    } else if (StringEquals(tokens[1], "Z_DN_800_300_MS")) {
+        command.param_target = PROTOCOL_PARAM_Z_DN_800_300_MS;
+    } else if (StringEquals(tokens[1], "Z_UP_300_800_MS")) {
+        command.param_target = PROTOCOL_PARAM_Z_UP_300_800_MS;
+    } else if (StringEquals(tokens[1], "Z_UP_200_300_MS")) {
+        command.param_target = PROTOCOL_PARAM_Z_UP_200_300_MS;
     } else {
         return;
     }
 
     command.param_value = ParseUint32(tokens[2]);
+    if (is_spray_param) {
+        if (token_count < 4U) {
+            return;
+        }
+        command.spray_volume_ml = ParseUint16(tokens[3]);
+    }
     QueuePush(&command);
 }
 
@@ -213,7 +234,7 @@ static void ParseFrame(char *frame)
     memset(&command, 0, sizeof(command));
 
     if (StringEquals(tokens[0], "START")) {
-        /* #START,100,1;，volume 支持 50~800ml 档位，keep10 为人工预留 10ml 标志。 */
+        /* #START,100,1;，volume 支持 50/100/150/200ml，keep10 为人工预留 10ml 标志。 */
         if (token_count < 2U) {
             return;
         }
@@ -258,7 +279,13 @@ static void ParseFrame(char *frame)
         } else if (StringEquals(tokens[1], "STATE")) {
             command.type = PROTOCOL_CMD_GET_STATE;
         } else if (StringEquals(tokens[1], "SPRAY_MS")) {
+            if (token_count < 3U) {
+                return;
+            }
             command.type = PROTOCOL_CMD_GET_SPRAY_MS;
+            command.spray_volume_ml = ParseUint16(tokens[2]);
+        } else if (StringEquals(tokens[1], "ZVIRT_MS")) {
+            command.type = PROTOCOL_CMD_GET_ZVIRT_MS;
         } else {
             return;
         }
@@ -269,6 +296,10 @@ static void ParseFrame(char *frame)
         }
         if (StringEquals(tokens[1], "SPRAY_MS")) {
             command.type = PROTOCOL_CMD_SAVE_SPRAY_MS;
+        } else if (StringEquals(tokens[1], "ZVIRT_MS")) {
+            command.type = PROTOCOL_CMD_SAVE_ZVIRT_MS;
+        } else if (StringEquals(tokens[1], "ALL")) {
+            command.type = PROTOCOL_CMD_SAVE_ALL;
         } else {
             return;
         }

@@ -49,10 +49,10 @@ USART2 调试日志：
 [0000001016ms][BOOT] power_reset_down_stop reason=TIME_DONE
 [0000001017ms][BOOT] power_reset_up_seek_home
 [0000005000ms][CMD] rx=START volume_ml=100 keep10=1 pgmask=0x0004
-[0000005005ms][AUTO] plan volume_ml=100 machine_ml=90 reserved_ml=10 asp_count=9 spray_count=3 trim10=1 pump_speed=60%
+[0000005005ms][AUTO] plan volume_ml=100 machine_ml=90 reserved_ml=10 asp_count=3 spray_count=3 trim10=1 pump_speed=60%
 [0000005010ms][STATE] code=1 name=HOMING pgmask=0x0004
 [0000005012ms][MOVE] step_target=HOME step_index=0 final_target=HOME final_index=0 current_index=-1 mode=SENSOR sensor_pg=PG3 dir=FORWARD motor_speed=700 limit_ms=45000 pgmask=0x0000
-[0000006500ms][ASP] start stage=1/9 target_pos=800ml target_index=1 sensor_pg=PG0 duration_ms=5000 pump_speed=60% pgmask=0x0008
+[0000006500ms][ASP] start stage=1/3 target_pos=200ml target_index=3 sensor_pg=PG4 duration_ms=5000 pump_speed=60% pgmask=0x0008
 [0000011501ms][ASP] done stage=1 elapsed_ms=5001 pgmask=0x0008
 [0000015000ms][SPRAY] pump_stop stage=1 pump=3 duration_ms=5000 elapsed_ms=5000 active_mask=0x37 pgmask=0x0010
 [0000045001ms][ALARM] code=4 name=Z_TIMEOUT state=14/POWER_ON_RESET target_pos=HOME target_index=0 sensor_pg=PG3 pgmask=0x0000 elapsed_ms=45001 timeout_ms=45000
@@ -91,7 +91,7 @@ prints "#START,100,1;",0
 
 参数：
 
-- `volume`：目标总量，支持 `50/100/150/200/300/400/500/600/700/800`，单位 ml。
+- `volume`：目标总量，只支持 `50/100/150/200`，单位 ml。
 - `keep10`：是否预留 10ml 给科研人员人工清洗接液烧杯，`0` 不预留，`1` 预留。
 
 示例：
@@ -99,7 +99,7 @@ prints "#START,100,1;",0
 ```text
 #START,100,0;
 #START,100,1;
-#START,800,1;
+#START,200,1;
 ```
 
 `keep10=1` 的当前含义：
@@ -147,14 +147,17 @@ prints "#OK;",0
 
 ```text
 #SET,<param>,<time_ms>;
+#SET,SPRAY1_MS,<time_ms>,<volume>;
 ```
 
 参数：
 
 - `param`：时间参数名。
 - `time_ms`：毫秒，固件会夹紧到 `0~6000`。
+- `volume`：喷淋时间所属体积档位，只能是 `200/150/100/50`。
 - `ASP_MS` 和 `TRIM10_MS` 不保存，断电或复位后恢复 `My/app_config.h` 中默认值。
-- `SPRAY1_MS` 到 `SPRAY6_MS` 先写入 RAM，发送 `#SAVE,SPRAY_MS;` 后写入 Flash。
+- `SPRAY1_MS` 到 `SPRAY6_MS` 必须携带体积档位，写入该档位对应的 RAM 表；发送 `#SAVE,SPRAY_MS;` 后把 4 个档位全部写入 Flash。
+- `Z_DN_HOME_800_MS` 等 Z 虚拟位置时间会夹紧到 `1000~20000ms`，默认 `3000ms`。
 - 自动流程运行中发送 `#SET` 会被拒绝并返回 BUSY 状态。
 
 支持的参数：
@@ -163,20 +166,44 @@ prints "#OK;",0
 |---|---|---|
 | `ASP_MS` 或 `ASPIRATE_MS` | 每个吸取档位的固定吸取时间 | `APP_ASPIRATE_PHASE_MS` |
 | `TRIM10_MS` 或 `TRIM_MS` | 预留 10ml 时的定时补吸时间 | `APP_TRIM_10ML_MS` |
-| `SPRAY1_MS` | 泵 1 喷淋补偿时间，三段喷淋共用 | `APP_SPRAY_PUMP1_MS` 或 Flash 保存值 |
-| `SPRAY2_MS` | 泵 2 喷淋补偿时间，三段喷淋共用 | `APP_SPRAY_PUMP2_MS` 或 Flash 保存值 |
-| `SPRAY3_MS` | 泵 3 喷淋补偿时间，三段喷淋共用 | `APP_SPRAY_PUMP3_MS` 或 Flash 保存值 |
-| `SPRAY4_MS` | 泵 4 喷淋补偿时间，三段喷淋共用 | `APP_SPRAY_PUMP4_MS` 或 Flash 保存值 |
-| `SPRAY5_MS` | 泵 5 喷淋补偿时间，三段喷淋共用 | `APP_SPRAY_PUMP5_MS` 或 Flash 保存值 |
-| `SPRAY6_MS` | 泵 6 喷淋补偿时间，三段喷淋共用 | `APP_SPRAY_PUMP6_MS` 或 Flash 保存值 |
+| `SPRAY1_MS` | 当前档位的泵 1 喷淋补偿时间，三段喷淋共用 | `APP_SPRAY_PUMP1_MS` 或 Flash 保存值 |
+| `SPRAY2_MS` | 当前档位的泵 2 喷淋补偿时间，三段喷淋共用 | `APP_SPRAY_PUMP2_MS` 或 Flash 保存值 |
+| `SPRAY3_MS` | 当前档位的泵 3 喷淋补偿时间，三段喷淋共用 | `APP_SPRAY_PUMP3_MS` 或 Flash 保存值 |
+| `SPRAY4_MS` | 当前档位的泵 4 喷淋补偿时间，三段喷淋共用 | `APP_SPRAY_PUMP4_MS` 或 Flash 保存值 |
+| `SPRAY5_MS` | 当前档位的泵 5 喷淋补偿时间，三段喷淋共用 | `APP_SPRAY_PUMP5_MS` 或 Flash 保存值 |
+| `SPRAY6_MS` | 当前档位的泵 6 喷淋补偿时间，三段喷淋共用 | `APP_SPRAY_PUMP6_MS` 或 Flash 保存值 |
+| `Z_DN_HOME_800_MS` | HOME/PG3 下行到 800ml 虚拟位 | `APP_ZVIRT_TIME_DEFAULT_MS` 或 Flash 保存值 |
+| `Z_DN_800_300_MS` | 800ml 虚拟位下行到 300ml 虚拟位 | `APP_ZVIRT_TIME_DEFAULT_MS` 或 Flash 保存值 |
+| `Z_UP_300_800_MS` | 300ml 虚拟位上行到 800ml 虚拟位 | `APP_ZVIRT_TIME_DEFAULT_MS` 或 Flash 保存值 |
+| `Z_UP_200_300_MS` | 200ml/PG4 上行到 300ml 虚拟位 | `APP_ZVIRT_TIME_DEFAULT_MS` 或 Flash 保存值 |
 
 示例：
 
 ```text
 #SET,ASP_MS,5000;
 #SET,TRIM10_MS,1000;
-#SET,SPRAY1_MS,3500;
+#SET,SPRAY1_MS,3500,100;
+#SET,Z_DN_HOME_800_MS,3000;
 ```
+
+### 3.3 读取指定喷淋档位
+
+```text
+#GET,SPRAY_MS,<volume>;
+```
+
+参数：
+
+- `volume`：只能是 `200/150/100/50`。
+- `#GET,SPRAY_MS,50;`：读取 50ml 档位的 6 个喷淋时间，并由 MCU 回填滑轴、数值和档位显示。
+
+注意：
+
+- MCU 不保存“当前正在调节哪个档位”的状态。
+- HMI 需要自己用 `n_spray_vol.val` 保存当前选择的档位，并在读取和滑轴设置命令中把该值带给 MCU。
+- 自动运行时，固件会按 `#START` 的体积自动选择对应档位的喷淋时间，不依赖 HMI 当前停留在哪个调试档位。
+- 每个体积档位有 6 个泵时间；同一个体积档位内部的三段喷淋仍共用这 6 个时间。
+- `#SAVE,SPRAY_MS;` 保存全部 4 个档位共 24 个喷淋时间。
 
 ## 4. 停止、回原点和复位
 
@@ -224,7 +251,7 @@ prints "#OK;",0
 保护：
 
 - 上升到原点 PG3 后自动停止。
-- 下降到底部 PG6 后自动停止。
+- 下降到底部 PG7 后自动停止，PG7 同时是 50ml 位置。
 - 自动流程运行中拒绝手动 Z 轴命令。
 
 ### 5.2 手动蠕动泵
@@ -253,24 +280,30 @@ prints "#OK;",0
 ```text
 #GET,PG;
 #GET,STATE;
-#GET,SPRAY_MS;
+#GET,SPRAY_MS,<volume>;
+#GET,ZVIRT_MS;
 ```
 
 当前实现中，查询命令会触发 MCU 立即刷新屏幕控件。
 
 - `#GET,PG;`：刷新 PG 掩码。
 - `#GET,STATE;`：刷新状态、报警、速度、阶段和进度。
-- `#GET,SPRAY_MS;`：刷新 6 个喷淋时间滑轴和 6 个喷淋时间数值控件。
+- `#GET,SPRAY_MS,<volume>;`：刷新指定体积档位、6 个喷淋时间滑轴和 6 个喷淋时间数值控件。
+- `#GET,ZVIRT_MS;`：刷新 4 个 Z 轴虚拟位置时间滑轴和数值控件。
 
 ## 7. 保存命令
 
 ```text
 #SAVE,SPRAY_MS;
+#SAVE,ZVIRT_MS;
+#SAVE,ALL;
 ```
 
 含义：
 
-- 将当前 RAM 中的 `SPRAY1_MS` 到 `SPRAY6_MS` 写入 MCU 片内 Flash。
+- `#SAVE,SPRAY_MS;`、`#SAVE,ZVIRT_MS;`、`#SAVE,ALL;` 当前都会整包保存全部可保存参数。
+- 保存内容包括 4 个体积档位共 24 个喷淋时间，以及 4 个 Z 轴虚拟位置时间。
+- 这样做是为了避免 Flash 中喷淋参数和 Z 虚拟位置参数互相覆盖。
 - MCU 初始化时优先从 Flash 读取；Flash 记录无效时使用 `app_config.h` 默认值。
 - 自动流程运行中发送保存命令会被拒绝并显示 `BUSY`。
 - 保存成功显示 `SAVE OK`，保存失败显示 `SAVE ERR` 并报 `SAVE_FAILED`。
@@ -308,6 +341,8 @@ FF FF FF
 | `APP_SCREEN_SPRAY4_VALUE_OBJ` | `n_spray4_ms` | 泵 4 喷淋时间数值 |
 | `APP_SCREEN_SPRAY5_VALUE_OBJ` | `n_spray5_ms` | 泵 5 喷淋时间数值 |
 | `APP_SCREEN_SPRAY6_VALUE_OBJ` | `n_spray6_ms` | 泵 6 喷淋时间数值 |
+| `APP_SCREEN_SPRAY_VOLUME_VALUE_OBJ` | `n_spray_vol` | 当前正在调节的喷淋档位数值，200/150/100/50 |
+| `APP_SCREEN_SPRAY_VOLUME_TEXT_OBJ` | `t_spray_vol` | 当前正在调节的喷淋档位文本，例如 `100ml` |
 
 当 PG1 在任意 Z 轴动作前或动作中无效时，MCU 会停止执行机构，报警 `Y_NOT_READY`，并发送：
 
@@ -330,6 +365,8 @@ n_pgmask.val=3 FF FF FF
 t6.txt="READY" FF FF FF
 h_spray1_ms.val=3500 FF FF FF
 n_spray1_ms.val=3500 FF FF FF
+n_spray_vol.val=100 FF FF FF
+t_spray_vol.txt="100ml" FF FF FF
 ```
 
 ## 9. 状态码
@@ -382,10 +419,11 @@ n_spray1_ms.val=3500 FF FF FF
 | 备用电机 | DRV8870 第 8 路，`MOTOR_8` |
 | Y 轴允许工作位置 | 默认 PG1 |
 | Z 轴上限/原点 | PG3 |
-| Z 轴 100ml 定位 | PG4 |
-| Z 轴 50ml 定位 | PG5 |
+| Z 轴 200ml 定位 | PG4 |
+| Z 轴 150ml 定位 | PG5 |
+| Z 轴 100ml 定位 | PG6 |
+| Z 轴 50ml 定位/下限/底部 | PG7 |
 | 上电复位目标 | PG3 |
-| Z 轴下限/底部 | PG6 |
 | PG 有效电平 | 低电平有效 |
 
 Y 轴保护规则：
@@ -401,21 +439,15 @@ Y 轴保护规则：
 
 | 体积 | 吸取逻辑位置 | 第一次喷淋逻辑位置 | 到位方式 |
 |---:|---|---|---|
-| 800ml | `APP_Z_POS_800ML` | `APP_Z_POS_700ML` | 定时步进 |
-| 700ml | `APP_Z_POS_700ML` | `APP_Z_POS_600ML` | 定时步进 |
-| 600ml | `APP_Z_POS_600ML` | `APP_Z_POS_500ML` | 定时步进 |
-| 500ml | `APP_Z_POS_500ML` | `APP_Z_POS_400ML` | 定时步进 |
-| 400ml | `APP_Z_POS_400ML` | `APP_Z_POS_300ML` | 定时步进 |
-| 300ml | `APP_Z_POS_300ML` | `APP_Z_POS_200ML` | 定时步进 |
-| 200ml | `APP_Z_POS_200ML` | `APP_Z_POS_150ML` | 定时步进 |
-| 150ml | `APP_Z_POS_150ML` | `APP_Z_POS_100ML` | 定时步进 |
-| 100ml | `APP_Z_POS_100ML` | `APP_Z_POS_50ML` | PG4 传感器确认 |
-| 50ml | `APP_Z_POS_50ML` | `APP_Z_POS_BOTTOM` | PG5 传感器确认 |
+| 200ml | `APP_Z_POS_200ML` | `APP_Z_POS_150ML` | PG4 传感器确认 |
+| 150ml | `APP_Z_POS_150ML` | `APP_Z_POS_100ML` | PG5 传感器确认 |
+| 100ml | `APP_Z_POS_100ML` | `APP_Z_POS_50ML` | PG6 传感器确认 |
+| 50ml | `APP_Z_POS_50ML` | `APP_Z_POS_50ML` | PG7 传感器确认，原地喷 |
 
 Z 轴逻辑顺序：
 
 ```text
-HOME(PG3) -> 800 -> 700 -> 600 -> 500 -> 400 -> 300 -> 200 -> 150 -> 100(PG4) -> 50(PG5) -> BOTTOM(PG6)
+HOME(PG3) -> 800(虚拟) -> 300(虚拟) -> 200(PG4) -> 150(PG5) -> 100(PG6) -> 50(PG7/下限)
 ```
 
 相邻步进时间：
@@ -427,22 +459,24 @@ HOME(PG3) -> 800 -> 700 -> 600 -> 500 -> 400 -> 300 -> 200 -> 150 -> 100(PG4) ->
 上电复位和反向保护：
 
 - `APP_POWER_ON_RESET_DOWN_MS`：上电复位开始时先向下运行的时间，默认 `1000ms`。
-- 如果下行过程中触发 PG6，下行立即停止，然后转为上行寻找 PG3。
+- 如果下行过程中触发 PG7，下行立即停止，然后转为上行寻找 PG3。
 - `APP_Z_REVERSE_DEADTIME_MS`：Z 轴从上行切到下行、或从下行切到上行前的空档停顿时间，默认 `300ms`。
 - 反向保护由 MCU 内部自动执行，HMI 不需要新增命令。
 
 自动吸取：
 
-- 从 800ml 档开始，按表格顺序逐档移动和吸取。
+- 从 200ml 档开始，按表格顺序逐档移动和吸取。
 - 到达目标档位后停止继续向下。
 - 每个档位使用同一个吸取时间 `ASP_MS` 和同一个全局泵速。
 
 自动喷淋：
 
 - 第一次：使用目标档位表中的 `first_spray_pos`，表示“吸取位置下一档位置喷淋”。
-- 第二次：固定 300ml 位置喷淋。
-- 第三次：固定 800ml 位置喷淋。
-- 三段喷淋共用同一套 6 泵补偿时间。上电时优先使用 Flash 保存值；没有有效保存值时使用 `My/app_config.c` 的 `APP_SPRAY_PUMP_MS` 默认值。
+- 第二次：固定 300ml 虚拟位置喷淋。
+- 第三次：固定 800ml 虚拟位置喷淋。
+- 50ml 的第一次喷淋没有下一档，保持在 50ml 原地喷。
+- 200/150/100/50 四个自动档位各有一套 6 泵补偿时间。上电时优先使用 Flash 保存值；没有有效保存值时使用 `My/app_config.c` 的 `APP_SPRAY_PUMP_MS` 默认值填充每个档位。
+- 同一个自动档位内部，三段喷淋共用该档位的同一套 6 泵补偿时间。
 - 每段喷淋开始时 6 个泵同时启动，每个泵按自己的补偿时间停止；6 个泵全部停止后才进入下一段喷淋。
 
 ## 13. HMI 页面事件建议
@@ -451,7 +485,7 @@ HOME(PG3) -> 800 -> 700 -> 600 -> 500 -> 400 -> 300 -> 200 -> 150 -> 100(PG4) ->
 
 建议放置：
 
-- 体积选择控件：固定按钮或下拉，值为 `50/100/150/200/300/400/500/600/700/800`。
+- 体积选择控件：固定按钮或下拉，值为 `50/100/150/200`。
 - 预留 10ml 开关：双态按钮或复选框，值为 `0/1`。
 - 启动按钮：发送 `#START,<volume>,<keep10>;`。
 - 停止按钮：发送 `#STOP;`。
@@ -512,18 +546,70 @@ prints ";",0
 
 喷淋补偿时间由 HMI 设置页面调整。你已定义滑轴 `h_spray1_ms` 到 `h_spray6_ms`，以及数值 `n_spray1_ms` 到 `n_spray6_ms`。
 
-页面打开时建议先读取 MCU 当前值：
+还需要新增两个显示控件：
+
+| 控件名 | 类型建议 | 作用 |
+|---|---|---|
+| `n_spray_vol` | 数值 | 当前正在调节的体积档位，值为 200/150/100/50 |
+| `t_spray_vol` | 文本 | 当前正在调节的体积档位，例如 `100ml` |
+
+页面打开时建议先设置默认档位为 200ml，再读取 MCU 当前值：
 
 ```text
-prints "#GET,SPRAY_MS;",0
+n_spray_vol.val=200
+t_spray_vol.txt="200ml"
+cov n_spray_vol.val,t_tmp.txt,0
+prints "#GET,SPRAY_MS,",0
+prints t_tmp.txt,0
+prints ";",0
+```
+
+新增一个“切换喷淋档位”按钮。这个按钮只修改 HMI 本地变量和显示，不向 MCU 发送命令：
+
+```text
+if(n_spray_vol.val==200)
+{
+  n_spray_vol.val=150
+  t_spray_vol.txt="150ml"
+}else if(n_spray_vol.val==150)
+{
+  n_spray_vol.val=100
+  t_spray_vol.txt="100ml"
+}else if(n_spray_vol.val==100)
+{
+  n_spray_vol.val=50
+  t_spray_vol.txt="50ml"
+}else
+{
+  n_spray_vol.val=200
+  t_spray_vol.txt="200ml"
+}
+```
+
+每按一次，HMI 本地按下面顺序切换：
+
+```text
+200 -> 150 -> 100 -> 50 -> 200
+```
+
+切换后如果需要立刻读取该档位的保存值，再额外放一个“读取当前档位”按钮，或在切换按钮最后追加读取命令：
+
+```text
+cov n_spray_vol.val,t_tmp.txt,0
+prints "#GET,SPRAY_MS,",0
+prints t_tmp.txt,0
+prints ";",0
 ```
 
 泵 1 滑轴弹起事件：
 
 ```text
 n_spray1_ms.val=h_spray1_ms.val
+cov n_spray_vol.val,t_tmp.txt,0
 prints "#SET,SPRAY1_MS,",0
 prints h_spray1_ms.val,0
+prints ",",0
+prints t_tmp.txt,0
 prints ";",0
 ```
 
@@ -531,8 +617,11 @@ prints ";",0
 
 ```text
 n_spray2_ms.val=h_spray2_ms.val
+cov n_spray_vol.val,t_tmp.txt,0
 prints "#SET,SPRAY2_MS,",0
 prints h_spray2_ms.val,0
+prints ",",0
+prints t_tmp.txt,0
 prints ";",0
 ```
 
@@ -544,7 +633,97 @@ prints ";",0
 prints "#SAVE,SPRAY_MS;",0
 ```
 
-### 13.4 手动调试页面
+注意：
+
+- 滑轴发送的 `SPRAY1_MS` 到 `SPRAY6_MS` 只会修改当前 `n_spray_vol` 对应的那一档。
+- 自动运行 `#START,100,0;` 时，MCU 使用 100ml 档位的 6 个喷淋时间。
+- 自动运行 `#START,50,0;` 时，MCU 使用 50ml 档位的 6 个喷淋时间。
+- HMI 当前调试页面选中哪个档位，不会影响正在自动运行的任务；自动任务只看 `#START` 的体积。
+
+### 13.4 Z 虚拟位置时间调试页面
+
+新增 4 个滑轴和 4 个数值控件：
+
+| 滑轴控件 | 数值控件 | 含义 |
+|---|---|---|
+| `h_zd_h8` | `n_zd_h8` | HOME/PG3 下行到 800ml 虚拟位 |
+| `h_zd_83` | `n_zd_83` | 800ml 虚拟位下行到 300ml 虚拟位 |
+| `h_zu_38` | `n_zu_38` | 300ml 虚拟位上行到 800ml 虚拟位 |
+| `h_zu_23` | `n_zu_23` | 200ml/PG4 上行到 300ml 虚拟位 |
+
+滑轴范围建议全部设置为：
+
+```text
+minval=1000
+maxval=20000
+```
+
+页面打开或读取按钮事件：
+
+```text
+prints "#GET,ZVIRT_MS;",0
+```
+
+命名说明：
+
+- `zd` 表示 Z down，下行。
+- `zu` 表示 Z up，上行。
+- `h8` 表示 HOME 到 800ml。
+- `83` 表示 800ml 到 300ml。
+- `38` 表示 300ml 到 800ml。
+- `23` 表示 200ml 到 300ml。
+
+`h_zd_h8` 弹起事件：
+
+```text
+n_zd_h8.val=h_zd_h8.val
+prints "#SET,Z_DN_HOME_800_MS,",0
+prints h_zd_h8.val,0
+prints ";",0
+```
+
+`h_zd_83` 弹起事件：
+
+```text
+n_zd_83.val=h_zd_83.val
+prints "#SET,Z_DN_800_300_MS,",0
+prints h_zd_83.val,0
+prints ";",0
+```
+
+`h_zu_38` 弹起事件：
+
+```text
+n_zu_38.val=h_zu_38.val
+prints "#SET,Z_UP_300_800_MS,",0
+prints h_zu_38.val,0
+prints ";",0
+```
+
+`h_zu_23` 弹起事件：
+
+```text
+n_zu_23.val=h_zu_23.val
+prints "#SET,Z_UP_200_300_MS,",0
+prints h_zu_23.val,0
+prints ";",0
+```
+
+保存按钮事件：
+
+```text
+prints "#SAVE,ZVIRT_MS;",0
+```
+
+保存全部按钮也可以写：
+
+```text
+prints "#SAVE,ALL;",0
+```
+
+注意：这 4 个时间只用于没有独立 PG 的虚拟位置定位。HOME、200ml、150ml、100ml、50ml 都有真实 PG，最终停止仍以 PG 为准。
+
+### 13.5 手动调试页面
 
 建议按钮按“按下开始、松开停止”写事件。
 
@@ -588,7 +767,7 @@ prints "#MAN,PUMP,OUT,60;",0
 prints "#MAN,PUMP,STOP;",0
 ```
 
-### 13.5 人工补加确认页面
+### 13.6 人工补加确认页面
 
 当 `n_state.val==9` 时，HMI 应进入或弹出人工提示页面。页面文字建议由屏幕资源显示：
 
@@ -602,7 +781,7 @@ prints "#MAN,PUMP,STOP;",0
 prints "#OK;",0
 ```
 
-### 13.6 状态刷新和报警显示
+### 13.7 状态刷新和报警显示
 
 建议 HMI 周期性或在状态控件变化时读取这些 MCU 写入的控件：
 

@@ -29,7 +29,10 @@ typedef enum {
     PROTOCOL_CMD_GET_PG,
     PROTOCOL_CMD_GET_STATE,
     PROTOCOL_CMD_GET_SPRAY_MS,
+    PROTOCOL_CMD_GET_ZVIRT_MS,
     PROTOCOL_CMD_SAVE_SPRAY_MS,
+    PROTOCOL_CMD_SAVE_ZVIRT_MS,
+    PROTOCOL_CMD_SAVE_ALL,
     PROTOCOL_CMD_RESET
 } Protocol_CommandType;
 
@@ -43,7 +46,11 @@ typedef enum {
     PROTOCOL_PARAM_SPRAY3_MS,
     PROTOCOL_PARAM_SPRAY4_MS,
     PROTOCOL_PARAM_SPRAY5_MS,
-    PROTOCOL_PARAM_SPRAY6_MS
+    PROTOCOL_PARAM_SPRAY6_MS,
+    PROTOCOL_PARAM_Z_DN_HOME_800_MS,
+    PROTOCOL_PARAM_Z_DN_800_300_MS,
+    PROTOCOL_PARAM_Z_UP_300_800_MS,
+    PROTOCOL_PARAM_Z_UP_200_300_MS
 } Protocol_ParamTarget;
 
 /* 手动控制目标：Z 轴或全部蠕动泵。 */
@@ -67,6 +74,7 @@ typedef enum {
 typedef struct {
     Protocol_CommandType type;
     uint16_t volume_ml;
+    uint16_t spray_volume_ml;
     uint8_t keep10;
     uint8_t speed_percent;
     Protocol_ParamTarget param_target;

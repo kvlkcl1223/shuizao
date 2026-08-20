@@ -76,8 +76,9 @@ void Screen_ShowWarningPage(void)
     Screen_Command(buffer);
 }
 
-void Screen_UpdateSprayTimes(const uint32_t *spray_ms)
+void Screen_UpdateSprayTimes(const uint32_t *spray_ms, uint16_t volume_ml)
 {
+    char volume_text[16];
     static const char *slider_objs[APP_PUMP_COUNT] = {
         APP_SCREEN_SPRAY1_SLIDER_OBJ,
         APP_SCREEN_SPRAY2_SLIDER_OBJ,
@@ -99,9 +100,38 @@ void Screen_UpdateSprayTimes(const uint32_t *spray_ms)
         return;
     }
 
+    sprintf(volume_text, "%uml", volume_ml);
+    Screen_SetValue(APP_SCREEN_SPRAY_VOLUME_VALUE_OBJ, volume_ml);
+    Screen_SetText(APP_SCREEN_SPRAY_VOLUME_TEXT_OBJ, volume_text);
+
     for (uint8_t i = 0U; i < APP_PUMP_COUNT; i++) {
         Screen_SetValue(slider_objs[i], (int32_t)spray_ms[i]);
         Screen_SetValue(value_objs[i], (int32_t)spray_ms[i]);
+    }
+}
+
+void Screen_UpdateZVirtTimes(const uint32_t *zvirt_ms)
+{
+    static const char *slider_objs[APP_ZVIRT_COUNT] = {
+        APP_SCREEN_Z_DN_HOME_800_SLIDER_OBJ,
+        APP_SCREEN_Z_DN_800_300_SLIDER_OBJ,
+        APP_SCREEN_Z_UP_300_800_SLIDER_OBJ,
+        APP_SCREEN_Z_UP_200_300_SLIDER_OBJ
+    };
+    static const char *value_objs[APP_ZVIRT_COUNT] = {
+        APP_SCREEN_Z_DN_HOME_800_VALUE_OBJ,
+        APP_SCREEN_Z_DN_800_300_VALUE_OBJ,
+        APP_SCREEN_Z_UP_300_800_VALUE_OBJ,
+        APP_SCREEN_Z_UP_200_300_VALUE_OBJ
+    };
+
+    if (zvirt_ms == 0) {
+        return;
+    }
+
+    for (uint8_t i = 0U; i < APP_ZVIRT_COUNT; i++) {
+        Screen_SetValue(slider_objs[i], (int32_t)zvirt_ms[i]);
+        Screen_SetValue(value_objs[i], (int32_t)zvirt_ms[i]);
     }
 }
 

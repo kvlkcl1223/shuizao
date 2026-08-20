@@ -138,8 +138,14 @@ static const char *Logger_CommandName(Protocol_CommandType type)
         return "GET_STATE";
     case PROTOCOL_CMD_GET_SPRAY_MS:
         return "GET_SPRAY_MS";
+    case PROTOCOL_CMD_GET_ZVIRT_MS:
+        return "GET_ZVIRT_MS";
     case PROTOCOL_CMD_SAVE_SPRAY_MS:
         return "SAVE_SPRAY_MS";
+    case PROTOCOL_CMD_SAVE_ZVIRT_MS:
+        return "SAVE_ZVIRT_MS";
+    case PROTOCOL_CMD_SAVE_ALL:
+        return "SAVE_ALL";
     case PROTOCOL_CMD_RESET:
         return "RESET";
     default:
@@ -166,6 +172,14 @@ static const char *Logger_ParamName(Protocol_ParamTarget target)
         return "SPRAY5_MS";
     case PROTOCOL_PARAM_SPRAY6_MS:
         return "SPRAY6_MS";
+    case PROTOCOL_PARAM_Z_DN_HOME_800_MS:
+        return "Z_DN_HOME_800_MS";
+    case PROTOCOL_PARAM_Z_DN_800_300_MS:
+        return "Z_DN_800_300_MS";
+    case PROTOCOL_PARAM_Z_UP_300_800_MS:
+        return "Z_UP_300_800_MS";
+    case PROTOCOL_PARAM_Z_UP_200_300_MS:
+        return "Z_UP_200_300_MS";
     default:
         return "NONE";
     }
@@ -222,14 +236,6 @@ static const char *Logger_ZPosName(uint8_t pos)
         return "HOME";
     case APP_Z_POS_800ML:
         return "800ml";
-    case APP_Z_POS_700ML:
-        return "700ml";
-    case APP_Z_POS_600ML:
-        return "600ml";
-    case APP_Z_POS_500ML:
-        return "500ml";
-    case APP_Z_POS_400ML:
-        return "400ml";
     case APP_Z_POS_300ML:
         return "300ml";
     case APP_Z_POS_200ML:
@@ -240,8 +246,6 @@ static const char *Logger_ZPosName(uint8_t pos)
         return "100ml";
     case APP_Z_POS_50ML:
         return "50ml";
-    case APP_Z_POS_BOTTOM:
-        return "BOTTOM";
     default:
         return "UNKNOWN";
     }
@@ -252,12 +256,14 @@ static uint8_t Logger_ZPosSensorPG(uint8_t pos)
     switch ((App_ZPosition)pos) {
     case APP_Z_POS_HOME:
         return PG_ToNumber(APP_Z_HOME_PG);
+    case APP_Z_POS_200ML:
+        return PG_ToNumber(APP_Z_200ML_PG);
+    case APP_Z_POS_150ML:
+        return PG_ToNumber(APP_Z_150ML_PG);
     case APP_Z_POS_100ML:
         return PG_ToNumber(APP_Z_100ML_PG);
     case APP_Z_POS_50ML:
         return PG_ToNumber(APP_Z_50ML_PG);
-    case APP_Z_POS_BOTTOM:
-        return PG_ToNumber(APP_Z_BOTTOM_PG);
     default:
         return 0U;
     }
@@ -378,9 +384,17 @@ void Logger_Command(const Protocol_Command *command)
 
     case PROTOCOL_CMD_SET_PARAM:
         (void)snprintf(line + strlen(line), sizeof(line) - strlen(line),
-                       "rx=SET param=%s value_ms=%lu pgmask=0x%04X\r\n",
+                       "rx=SET param=%s value_ms=%lu spray_volume_ml=%u pgmask=0x%04X\r\n",
                        Logger_ParamName(command->param_target),
                        (unsigned long)command->param_value,
+                       command->spray_volume_ml,
+                       pgmask);
+        break;
+
+    case PROTOCOL_CMD_GET_SPRAY_MS:
+        (void)snprintf(line + strlen(line), sizeof(line) - strlen(line),
+                       "rx=GET_SPRAY_MS spray_volume_ml=%u pgmask=0x%04X\r\n",
+                       command->spray_volume_ml,
                        pgmask);
         break;
 

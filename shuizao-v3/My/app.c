@@ -32,10 +32,16 @@ static uint8_t app_keep10 = 0U;
 static uint16_t app_manual_reserved_ml = 0U;
 static uint8_t app_pump_speed_percent = APP_DEFAULT_PUMP_SPEED_PERCENT;
 
-/* HMI 可临时修改的工艺时间；不写入 Flash，断电或复位后恢复默认值。 */
+/* HMI 可临时修改的工艺时间；吸取和 10ml 补吸不写入 Flash，断电或复位后恢复默认值。 */
 static uint32_t app_aspirate_phase_ms = APP_ASPIRATE_PHASE_MS;
 static uint32_t app_trim10_ms = APP_TRIM_10ML_MS;
-static uint32_t app_spray_pump_ms[APP_PUMP_COUNT];
+
+/* 4 个目标体积各自保存 6 个泵的喷淋补偿时间，下标：档位 0~3，泵 0~5。 */
+static uint32_t app_spray_profile_ms[APP_SPRAY_PROFILE_COUNT][APP_PUMP_COUNT];
+static uint8_t app_spray_active_profile = 0U;
+
+/* 4 个 Z 轴虚拟位置时间：HOME->800、800->300、300->800、200->300。 */
+static uint32_t app_zvirt_ms[APP_ZVIRT_COUNT];
 
 /* START 后按体积档位表生成本次自动流程的吸取和喷淋目标。 */
 static App_ZPosition app_aspirate_sequence[APP_MAX_AUTO_PHASES];
@@ -75,7 +81,7 @@ static bool app_auto_after_home = false;
 /* RETURN_HOME 可来自自动完成或 STOP 取消，完成路径才会进入人工补加确认。 */
 static bool app_return_after_success = false;
 
-/* 手动动作记录，用于到达 PG3/PG6 后自动停止。 */
+/* 手动动作记录，用于到达 PG3/PG7 后自动停止。 */
 static Protocol_ManualAction app_manual_z_action = PROTOCOL_MANUAL_ACTION_NONE;
 static Protocol_ManualAction app_manual_pump_action = PROTOCOL_MANUAL_ACTION_NONE;
 
@@ -101,14 +107,6 @@ static uint16_t App_ZPosVolumeMl(App_ZPosition pos)
     switch (pos) {
     case APP_Z_POS_800ML:
         return 800U;
-    case APP_Z_POS_700ML:
-        return 700U;
-    case APP_Z_POS_600ML:
-        return 600U;
-    case APP_Z_POS_500ML:
-        return 500U;
-    case APP_Z_POS_400ML:
-        return 400U;
     case APP_Z_POS_300ML:
         return 300U;
     case APP_Z_POS_200ML:
@@ -129,12 +127,14 @@ static PG_ID App_ZPosSensorPG(App_ZPosition pos)
     switch (pos) {
     case APP_Z_POS_HOME:
         return APP_Z_HOME_PG;
+    case APP_Z_POS_200ML:
+        return APP_Z_200ML_PG;
+    case APP_Z_POS_150ML:
+        return APP_Z_150ML_PG;
     case APP_Z_POS_100ML:
         return APP_Z_100ML_PG;
     case APP_Z_POS_50ML:
         return APP_Z_50ML_PG;
-    case APP_Z_POS_BOTTOM:
-        return APP_Z_BOTTOM_PG;
     default:
         return PG_INVALID;
     }
@@ -166,6 +166,12 @@ static uint32_t App_ZStepDurationMs(App_ZPosition from, App_ZPosition to)
 
     if ((uint8_t)to == ((uint8_t)from + 1U)) {
         index = (uint8_t)from;
+        if (from == APP_Z_POS_HOME && to == APP_Z_POS_800ML) {
+            return app_zvirt_ms[0];
+        }
+        if (from == APP_Z_POS_800ML && to == APP_Z_POS_300ML) {
+            return app_zvirt_ms[1];
+        }
         if (index < APP_Z_STEP_COUNT) {
             return APP_Z_STEP_DOWN_MS[index];
         }
@@ -173,6 +179,12 @@ static uint32_t App_ZStepDurationMs(App_ZPosition from, App_ZPosition to)
 
     if ((uint8_t)from == ((uint8_t)to + 1U)) {
         index = (uint8_t)to;
+        if (from == APP_Z_POS_300ML && to == APP_Z_POS_800ML) {
+            return app_zvirt_ms[2];
+        }
+        if (from == APP_Z_POS_200ML && to == APP_Z_POS_300ML) {
+            return app_zvirt_ms[3];
+        }
         if (index < APP_Z_STEP_COUNT) {
             return APP_Z_STEP_UP_MS[index];
         }
@@ -194,10 +206,80 @@ static uint32_t App_ClampProcessTimeMs(uint32_t time_ms)
     return time_ms;
 }
 
+static uint32_t App_ClampZVirtTimeMs(uint32_t time_ms)
+{
+    if (time_ms < APP_ZVIRT_TIME_MIN_MS) {
+        return APP_ZVIRT_TIME_MIN_MS;
+    }
+    if (time_ms > APP_ZVIRT_TIME_MAX_MS) {
+        return APP_ZVIRT_TIME_MAX_MS;
+    }
+    return time_ms;
+}
+
 static void App_LoadDefaultSprayTimes(void)
 {
-    for (uint8_t i = 0U; i < APP_PUMP_COUNT; i++) {
-        app_spray_pump_ms[i] = App_ClampProcessTimeMs(APP_SPRAY_PUMP_MS[i]);
+    for (uint8_t profile = 0U; profile < APP_SPRAY_PROFILE_COUNT; profile++) {
+        for (uint8_t pump = 0U; pump < APP_PUMP_COUNT; pump++) {
+            app_spray_profile_ms[profile][pump] = App_ClampProcessTimeMs(APP_SPRAY_PUMP_MS[pump]);
+        }
+    }
+}
+
+static void App_LoadDefaultZVirtTimes(void)
+{
+    for (uint8_t i = 0U; i < APP_ZVIRT_COUNT; i++) {
+        app_zvirt_ms[i] = APP_ZVIRT_TIME_DEFAULT_MS;
+    }
+}
+
+static int8_t App_FindSprayProfileIndex(uint16_t volume_ml)
+{
+    for (uint8_t i = 0U; i < APP_SPRAY_PROFILE_COUNT; i++) {
+        if (APP_SPRAY_PROFILE_VOLUMES[i] == volume_ml) {
+            return (int8_t)i;
+        }
+    }
+
+    return -1;
+}
+
+static uint16_t App_SprayProfileVolume(uint8_t profile)
+{
+    if (profile >= APP_SPRAY_PROFILE_COUNT) {
+        return 0U;
+    }
+
+    return APP_SPRAY_PROFILE_VOLUMES[profile];
+}
+
+static uint32_t *App_SprayMsForProfile(uint8_t profile)
+{
+    if (profile >= APP_SPRAY_PROFILE_COUNT) {
+        return 0;
+    }
+
+    return app_spray_profile_ms[profile];
+}
+
+static uint32_t *App_ActiveSprayMs(void)
+{
+    return app_spray_profile_ms[app_spray_active_profile];
+}
+
+static int8_t App_ZVirtParamIndex(Protocol_ParamTarget target)
+{
+    switch (target) {
+    case PROTOCOL_PARAM_Z_DN_HOME_800_MS:
+        return 0;
+    case PROTOCOL_PARAM_Z_DN_800_300_MS:
+        return 1;
+    case PROTOCOL_PARAM_Z_UP_300_800_MS:
+        return 2;
+    case PROTOCOL_PARAM_Z_UP_200_300_MS:
+        return 3;
+    default:
+        return -1;
     }
 }
 
@@ -338,19 +420,21 @@ static bool App_BuildAutoPlan(uint16_t volume_ml, uint8_t keep10)
     uint16_t trim_ml = 0U;
     int8_t requested_index;
     int8_t base_index;
-    int8_t spray2_index;
-    int8_t spray3_index;
+    int8_t spray_profile_index;
 
     requested_index = App_FindVolumeIndex(volume_ml);
     if (requested_index < 0 || volume_ml <= reserved_ml) {
         return false;
     }
 
+    spray_profile_index = App_FindSprayProfileIndex(volume_ml);
+    if (spray_profile_index < 0) {
+        return false;
+    }
+
     machine_volume_ml = (uint16_t)(volume_ml - reserved_ml);
     base_index = App_FindBaseVolumeIndex(machine_volume_ml, &trim_ml);
-    spray2_index = App_FindVolumeIndex(APP_SPRAY_FIXED_VOLUME_STAGE2_ML);
-    spray3_index = App_FindVolumeIndex(APP_SPRAY_FIXED_VOLUME_STAGE3_ML);
-    if (base_index < 0 || spray2_index < 0 || spray3_index < 0) {
+    if (base_index < 0) {
         return false;
     }
 
@@ -365,8 +449,8 @@ static bool App_BuildAutoPlan(uint16_t volume_ml, uint8_t keep10)
 
     app_spray_phase_count = APP_SPRAY_STAGE_COUNT;
     app_spray_sequence[0] = APP_VOLUME_POSITIONS[(uint8_t)base_index].first_spray_pos;
-    app_spray_sequence[1] = APP_VOLUME_POSITIONS[(uint8_t)spray2_index].aspirate_pos;
-    app_spray_sequence[2] = APP_VOLUME_POSITIONS[(uint8_t)spray3_index].aspirate_pos;
+    app_spray_sequence[1] = APP_SPRAY_FIXED_STAGE2_POS;
+    app_spray_sequence[2] = APP_SPRAY_FIXED_STAGE3_POS;
     for (uint8_t i = 0U; i < app_spray_phase_count; i++) {
         if (!App_ZPosIsValid(app_spray_sequence[i])) {
             return false;
@@ -376,6 +460,7 @@ static bool App_BuildAutoPlan(uint16_t volume_ml, uint8_t keep10)
     app_has_trim10 = trim_ml ? 1U : 0U;
     app_manual_reserved_ml = reserved_ml;
     app_keep10 = keep10 ? 1U : 0U;
+    app_spray_active_profile = (uint8_t)spray_profile_index;
     return app_aspirate_phase_count > 0U;
 }
 
@@ -613,7 +698,7 @@ static void App_StartPowerResetDown(void)
     App_SetState(APP_STATE_POWER_ON_RESET);
 
     if (PG_IsActive(APP_Z_BOTTOM_PG)) {
-        app_current_pos = APP_Z_POS_BOTTOM;
+        app_current_pos = APP_Z_POS_50ML;
         Logger_Info("BOOT", "power_reset_bottom_already_active");
         App_StartPowerResetHomeSeek();
         return;
@@ -708,7 +793,7 @@ static void App_TaskPowerOnReset(void)
 
         if (PG_IsActive(APP_Z_BOTTOM_PG)) {
             App_ZBrake();
-            app_current_pos = APP_Z_POS_BOTTOM;
+            app_current_pos = APP_Z_POS_50ML;
             Logger_Info("BOOT", "power_reset_down_stop reason=BOTTOM_PG");
             App_StartPowerResetHomeSeek();
             return;
@@ -781,10 +866,11 @@ static uint8_t App_DisplayPhase(void)
 static uint32_t App_GetSprayMaxMs(void)
 {
     uint32_t max_ms = 0U;
+    uint32_t *spray_ms = App_ActiveSprayMs();
 
     for (uint8_t i = 0U; i < APP_PUMP_COUNT; i++) {
-        if (app_spray_pump_ms[i] > max_ms) {
-            max_ms = app_spray_pump_ms[i];
+        if (spray_ms[i] > max_ms) {
+            max_ms = spray_ms[i];
         }
     }
 
@@ -974,11 +1060,29 @@ static void App_HandleManual(const Protocol_Command *command)
     App_ReportStatus(true);
 }
 
+static int8_t App_RequireSprayProfile(uint16_t volume_ml)
+{
+    int8_t profile_index = App_FindSprayProfileIndex(volume_ml);
+
+    if (profile_index < 0) {
+        app_alarm = APP_ALARM_BAD_COMMAND;
+        Screen_ShowMessage("BAD VOL");
+        Screen_ShowAlarm((uint16_t)app_alarm);
+        return -1;
+    }
+
+    return profile_index;
+}
+
 static void App_HandleSetParam(const Protocol_Command *command)
 {
     uint32_t value;
     int8_t spray_index;
+    int8_t zvirt_index;
+    int8_t profile_index;
+    uint32_t *spray_ms = 0;
     bool spray_time_changed = false;
+    bool zvirt_time_changed = false;
 
     if (App_IsAutoRunning()) {
         app_alarm = APP_ALARM_BUSY;
@@ -1000,6 +1104,15 @@ static void App_HandleSetParam(const Protocol_Command *command)
         Logger_Value("SET", "trim10_ms", value);
         break;
     default:
+        zvirt_index = App_ZVirtParamIndex(command->param_target);
+        if (zvirt_index >= 0 && (uint8_t)zvirt_index < APP_ZVIRT_COUNT) {
+            value = App_ClampZVirtTimeMs(command->param_value);
+            app_zvirt_ms[(uint8_t)zvirt_index] = value;
+            Logger_Value("SET", "zvirt_ms", value);
+            zvirt_time_changed = true;
+            break;
+        }
+
         spray_index = App_SprayParamIndex(command->param_target);
         if (spray_index < 0 || (uint8_t)spray_index >= APP_PUMP_COUNT) {
             app_alarm = APP_ALARM_BAD_COMMAND;
@@ -1007,7 +1120,15 @@ static void App_HandleSetParam(const Protocol_Command *command)
             Screen_ShowAlarm((uint16_t)app_alarm);
             return;
         }
-        app_spray_pump_ms[(uint8_t)spray_index] = value;
+        profile_index = App_RequireSprayProfile(command->spray_volume_ml);
+        if (profile_index < 0) {
+            return;
+        }
+        spray_ms = App_SprayMsForProfile((uint8_t)profile_index);
+        if (spray_ms == 0) {
+            return;
+        }
+        spray_ms[(uint8_t)spray_index] = value;
         Logger_Value("SET", "spray_pump_ms", value);
         spray_time_changed = true;
         break;
@@ -1016,7 +1137,10 @@ static void App_HandleSetParam(const Protocol_Command *command)
     app_alarm = APP_ALARM_NONE;
     Screen_ShowMessage("SET OK");
     if (spray_time_changed) {
-        Screen_UpdateSprayTimes(app_spray_pump_ms);
+        Screen_UpdateSprayTimes(spray_ms, command->spray_volume_ml);
+    }
+    if (zvirt_time_changed) {
+        Screen_UpdateZVirtTimes(app_zvirt_ms);
     }
     App_ReportStatus(true);
 }
@@ -1031,7 +1155,7 @@ static void App_HandleSaveSprayTimes(void)
         return;
     }
 
-    if (Settings_SaveSprayMs(app_spray_pump_ms)) {
+    if (Settings_SaveAll(app_spray_profile_ms, app_zvirt_ms)) {
         app_alarm = APP_ALARM_NONE;
         Logger_Info("SAVE", "spray_ms result=ok");
         Screen_ShowMessage("SAVE OK");
@@ -1043,7 +1167,32 @@ static void App_HandleSaveSprayTimes(void)
         Screen_ShowAlarm((uint16_t)app_alarm);
     }
 
-    Screen_UpdateSprayTimes(app_spray_pump_ms);
+    App_ReportStatus(true);
+}
+
+static void App_HandleSaveZVirtTimes(void)
+{
+    if (App_IsAutoRunning()) {
+        app_alarm = APP_ALARM_BUSY;
+        Logger_Info("SAVE", "rejected reason=BUSY");
+        Screen_ShowMessage("BUSY");
+        Screen_ShowAlarm((uint16_t)app_alarm);
+        return;
+    }
+
+    if (Settings_SaveAll(app_spray_profile_ms, app_zvirt_ms)) {
+        app_alarm = APP_ALARM_NONE;
+        Logger_Info("SAVE", "zvirt_ms result=ok");
+        Screen_ShowMessage("SAVE OK");
+        Screen_ShowAlarm((uint16_t)app_alarm);
+    } else {
+        app_alarm = APP_ALARM_SAVE_FAILED;
+        Logger_Info("SAVE", "zvirt_ms result=failed");
+        Screen_ShowMessage("SAVE ERR");
+        Screen_ShowAlarm((uint16_t)app_alarm);
+    }
+
+    Screen_UpdateZVirtTimes(app_zvirt_ms);
     App_ReportStatus(true);
 }
 
@@ -1124,12 +1273,42 @@ static void App_HandleCommand(const Protocol_Command *command)
         break;
 
     case PROTOCOL_CMD_GET_SPRAY_MS:
-        Screen_UpdateSprayTimes(app_spray_pump_ms);
-        App_ReportStatus(true);
+        if (!App_IsAutoRunning()) {
+            int8_t profile_index = App_RequireSprayProfile(command->spray_volume_ml);
+            if (profile_index >= 0) {
+                Screen_UpdateSprayTimes(App_SprayMsForProfile((uint8_t)profile_index),
+                                       command->spray_volume_ml);
+                app_alarm = APP_ALARM_NONE;
+                App_ReportStatus(true);
+            }
+        } else {
+            app_alarm = APP_ALARM_BUSY;
+            Logger_Info("GET", "spray_ms_rejected reason=BUSY");
+            Screen_ShowMessage("BUSY");
+            Screen_ShowAlarm((uint16_t)app_alarm);
+        }
+        break;
+
+    case PROTOCOL_CMD_GET_ZVIRT_MS:
+        if (!App_IsAutoRunning()) {
+            Screen_UpdateZVirtTimes(app_zvirt_ms);
+            app_alarm = APP_ALARM_NONE;
+            App_ReportStatus(true);
+        } else {
+            app_alarm = APP_ALARM_BUSY;
+            Logger_Info("GET", "zvirt_ms_rejected reason=BUSY");
+            Screen_ShowMessage("BUSY");
+            Screen_ShowAlarm((uint16_t)app_alarm);
+        }
         break;
 
     case PROTOCOL_CMD_SAVE_SPRAY_MS:
         App_HandleSaveSprayTimes();
+        break;
+
+    case PROTOCOL_CMD_SAVE_ZVIRT_MS:
+    case PROTOCOL_CMD_SAVE_ALL:
+        App_HandleSaveZVirtTimes();
         break;
 
     case PROTOCOL_CMD_RESET:
@@ -1165,7 +1344,7 @@ static void App_TaskManual(void)
         (void)App_ZDeadtimeTask();
     }
 
-    /* 手动上升/下降分别用 PG3/PG6 做软限位。 */
+    /* 手动上升/下降分别用 PG3/PG7 做软限位，PG7 同时是 50ml 和下限位。 */
     if (app_manual_z_action == PROTOCOL_MANUAL_ACTION_UP &&
         PG_IsActive(APP_Z_HOME_PG)) {
         App_ZBrake();
@@ -1176,7 +1355,7 @@ static void App_TaskManual(void)
                PG_IsActive(APP_Z_BOTTOM_PG)) {
         App_ZBrake();
         app_manual_z_action = PROTOCOL_MANUAL_ACTION_NONE;
-        app_current_pos = APP_Z_POS_BOTTOM;
+        app_current_pos = APP_Z_POS_50ML;
         Screen_ShowMessage("Z BOTTOM");
     }
 
@@ -1195,6 +1374,8 @@ static void App_StartSprayPhaseZero(void)
 
 static void App_StartSprayPumps(void)
 {
+    uint32_t *spray_ms = App_ActiveSprayMs();
+
     App_SetState(APP_STATE_SPRAYING);
     app_spray_active_pump_mask = 0U;
     Logger_PhaseStart("SPRAY",
@@ -1205,9 +1386,9 @@ static void App_StartSprayPumps(void)
                       app_pump_speed_percent,
                       PG_ReadMask());
 
-    /* 三段喷淋共用同一套 6 泵补偿时间：同开，按各自时间分别停止。 */
+    /* 三段喷淋共用当前启动体积对应的 6 泵补偿时间：同开，按各自时间分别停止。 */
     for (uint8_t i = 0U; i < APP_PUMP_COUNT; i++) {
-        if (app_spray_pump_ms[i] > 0U) {
+        if (spray_ms[i] > 0U) {
             Pump_RunOne(i, PUMP_DIR_OUT, app_pump_speed_percent);
             app_spray_active_pump_mask |= (uint8_t)(1U << i);
         } else {
@@ -1242,16 +1423,17 @@ static void App_AdvanceSprayPhase(void)
 static void App_TaskSpraying(void)
 {
     uint32_t elapsed = Elapsed(app_state_start_tick);
+    uint32_t *spray_ms = App_ActiveSprayMs();
 
     for (uint8_t i = 0U; i < APP_PUMP_COUNT; i++) {
         uint8_t pump_bit = (uint8_t)(1U << i);
         if ((app_spray_active_pump_mask & pump_bit) != 0U &&
-            elapsed >= app_spray_pump_ms[i]) {
+            elapsed >= spray_ms[i]) {
             Pump_StopOne(i);
             app_spray_active_pump_mask &= (uint8_t)(~pump_bit);
             Logger_SprayPumpStop((uint8_t)(app_phase_index + 1U),
                                  (uint8_t)(i + 1U),
-                                 app_spray_pump_ms[i],
+                                 spray_ms[i],
                                  elapsed,
                                  app_spray_active_pump_mask,
                                  PG_ReadMask());
@@ -1419,10 +1601,12 @@ void App_Init(void)
     app_aspirate_phase_ms = App_ClampProcessTimeMs(APP_ASPIRATE_PHASE_MS);
     app_trim10_ms = App_ClampProcessTimeMs(APP_TRIM_10ML_MS);
     App_LoadDefaultSprayTimes();
-    if (Settings_LoadSprayMs(app_spray_pump_ms)) {
-        Logger_Info("BOOT", "spray_ms_load source=flash");
+    App_LoadDefaultZVirtTimes();
+    app_spray_active_profile = 0U;
+    if (Settings_LoadAll(app_spray_profile_ms, app_zvirt_ms)) {
+        Logger_Info("BOOT", "settings_load source=flash");
     } else {
-        Logger_Info("BOOT", "spray_ms_load source=default");
+        Logger_Info("BOOT", "settings_load source=default");
     }
     app_last_screen_tick = 0U;
     app_auto_after_home = false;
@@ -1439,7 +1623,8 @@ void App_Init(void)
 #endif
 
     App_ReportStatus(true);
-    Screen_UpdateSprayTimes(app_spray_pump_ms);
+    Screen_UpdateSprayTimes(App_SprayMsForProfile(0U), App_SprayProfileVolume(0U));
+    Screen_UpdateZVirtTimes(app_zvirt_ms);
 }
 
 void App_Task(void)
