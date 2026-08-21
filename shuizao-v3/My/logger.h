@@ -40,6 +40,9 @@ void Logger_AlarmDetail(uint16_t alarm,
 /* 输出已经解析成功并交给应用层处理的屏幕命令。 */
 void Logger_Command(const Protocol_Command *command);
 
+/* 输出 USART3 从串口屏收到的原始字节，用于排查 HMI 发送格式和拆包问题。 */
+void Logger_ScreenRx(const uint8_t *data, uint16_t len);
+
 /* 输出 Z 轴相邻步进目标、最终目标、方向和 PG 掩码。 */
 void Logger_Move(uint8_t step_target_pos,
                  int8_t current_pos,

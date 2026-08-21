@@ -1,4 +1,5 @@
 #include "protocol.h"
+#include "logger.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -413,6 +414,8 @@ void Protocol_Process(void)
         rx_pending_len = 0U;
     }
     __enable_irq();
+
+    Logger_ScreenRx(local_buffer, len);
 
     /* 逐字节喂给帧状态机，支持一包里包含多条 #...; 命令。 */
     for (uint16_t i = 0U; i < len; i++) {

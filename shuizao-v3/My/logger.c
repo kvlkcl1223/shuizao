@@ -418,6 +418,53 @@ void Logger_Command(const Protocol_Command *command)
     Logger_SendLine(line);
 }
 
+void Logger_ScreenRx(const uint8_t *data, uint16_t len)
+{
+#if APP_LOG_ENABLE
+    char line[LOGGER_LINE_SIZE];
+    char ascii[17];
+    uint16_t offset = 0U;
+
+    if (data == 0 || len == 0U) {
+        return;
+    }
+
+    while (offset < len) {
+        uint16_t chunk = (uint16_t)(len - offset);
+        if (chunk > 16U) {
+            chunk = 16U;
+        }
+
+        Logger_FormatPrefix(line, sizeof(line), "RX3");
+        (void)snprintf(line + strlen(line), sizeof(line) - strlen(line),
+                       "len=%u off=%u hex=",
+                       len,
+                       offset);
+
+        for (uint16_t i = 0U; i < chunk; i++) {
+            uint8_t byte = data[offset + i];
+            (void)snprintf(line + strlen(line), sizeof(line) - strlen(line),
+                           "%02X",
+                           byte);
+            if (i + 1U < chunk) {
+                (void)snprintf(line + strlen(line), sizeof(line) - strlen(line), " ");
+            }
+            ascii[i] = (byte >= 0x20U && byte <= 0x7EU) ? (char)byte : '.';
+        }
+        ascii[chunk] = '\0';
+
+        (void)snprintf(line + strlen(line), sizeof(line) - strlen(line),
+                       " ascii=\"%s\"\r\n",
+                       ascii);
+        Logger_SendLine(line);
+        offset = (uint16_t)(offset + chunk);
+    }
+#else
+    (void)data;
+    (void)len;
+#endif
+}
+
 void Logger_Move(uint8_t step_target_pos,
                  int8_t current_pos,
                  int8_t final_target_pos,
