@@ -468,7 +468,7 @@ HOME(PG3) -> 800(虚拟) -> 700(虚拟) -> 600(虚拟) -> 500(虚拟) -> 400(虚
 自动吸取：
 
 - 自动模式仍然只支持 `200/150/100/50ml`。
-- 每次自动吸取都会先经过 800/700/600/500/400/300ml 虚拟位置；这些位置只停 Z 轴等待，不开泵。
+- 每次自动吸取都会先经过 800/700/600/500/400/300ml 虚拟位置；这些位置移动时不开泵，到位停留时开泵吸取。
 - 然后从 200ml 开始进入真实 PG 定位吸取段。
 - 真实段下降找 PG 时泵已经开始吸取；到达 PG 后继续停留吸取该段默认时间。
 - 目标为 200ml 时，真实吸取只执行到 PG4/200ml。
@@ -616,10 +616,11 @@ prints ";",0
 
 ```text
 n_spray1_ms.val=h_spray1_ms.val
-cov n_spray_vol.val,t_tmp.txt,0
 prints "#SET,SPRAY1_MS,",0
-prints h_spray1_ms.val,0
+cov h_spray1_ms.val,t_tmp.txt,0
+prints t_tmp.txt,0
 prints ",",0
+cov n_spray_vol.val,t_tmp.txt,0
 prints t_tmp.txt,0
 prints ";",0
 ```
@@ -628,10 +629,11 @@ prints ";",0
 
 ```text
 n_spray2_ms.val=h_spray2_ms.val
-cov n_spray_vol.val,t_tmp.txt,0
 prints "#SET,SPRAY2_MS,",0
-prints h_spray2_ms.val,0
+cov h_spray2_ms.val,t_tmp.txt,0
+prints t_tmp.txt,0
 prints ",",0
+cov n_spray_vol.val,t_tmp.txt,0
 prints t_tmp.txt,0
 prints ";",0
 ```
@@ -689,7 +691,8 @@ prints "#GET,ZVIRT_MS;",0
 ```text
 n_zd_h8.val=h_zd_h8.val
 prints "#SET,Z_DN_HOME_800_MS,",0
-prints h_zd_h8.val,0
+cov h_zd_h8.val,t_tmp.txt,0
+prints t_tmp.txt,0
 prints ";",0
 ```
 
@@ -698,7 +701,8 @@ prints ";",0
 ```text
 n_zd_83.val=h_zd_83.val
 prints "#SET,Z_DN_800_300_MS,",0
-prints h_zd_83.val,0
+cov h_zd_83.val,t_tmp.txt,0
+prints t_tmp.txt,0
 prints ";",0
 ```
 
@@ -707,7 +711,8 @@ prints ";",0
 ```text
 n_zu_38.val=h_zu_38.val
 prints "#SET,Z_UP_300_800_MS,",0
-prints h_zu_38.val,0
+cov h_zu_38.val,t_tmp.txt,0
+prints t_tmp.txt,0
 prints ";",0
 ```
 
@@ -716,7 +721,8 @@ prints ";",0
 ```text
 n_zu_23.val=h_zu_23.val
 prints "#SET,Z_UP_200_300_MS,",0
-prints h_zu_23.val,0
+cov h_zu_23.val,t_tmp.txt,0
+prints t_tmp.txt,0
 prints ";",0
 ```
 
