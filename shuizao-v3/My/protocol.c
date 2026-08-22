@@ -287,6 +287,9 @@ static void ParseFrame(char *frame)
             command.spray_volume_ml = ParseUint16(tokens[2]);
         } else if (StringEquals(tokens[1], "ZVIRT_MS")) {
             command.type = PROTOCOL_CMD_GET_ZVIRT_MS;
+        } else if (StringEquals(tokens[1], "SPD") ||
+                   StringEquals(tokens[1], "SPEED")) {
+            command.type = PROTOCOL_CMD_GET_SPEED;
         } else {
             return;
         }
@@ -299,6 +302,9 @@ static void ParseFrame(char *frame)
             command.type = PROTOCOL_CMD_SAVE_SPRAY_MS;
         } else if (StringEquals(tokens[1], "ZVIRT_MS")) {
             command.type = PROTOCOL_CMD_SAVE_ZVIRT_MS;
+        } else if (StringEquals(tokens[1], "SPD") ||
+                   StringEquals(tokens[1], "SPEED")) {
+            command.type = PROTOCOL_CMD_SAVE_SPEED;
         } else if (StringEquals(tokens[1], "ALL")) {
             command.type = PROTOCOL_CMD_SAVE_ALL;
         } else {

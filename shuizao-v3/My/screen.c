@@ -135,6 +135,12 @@ void Screen_UpdateZVirtTimes(const uint32_t *zvirt_ms)
     }
 }
 
+void Screen_UpdatePumpSpeed(uint8_t speed_percent)
+{
+    Screen_SetValue(APP_SCREEN_SPEED_OBJ, speed_percent);
+    Screen_SetValue(APP_SCREEN_SPEED_SLIDER_OBJ, speed_percent);
+}
+
 void Screen_UpdateStatus(uint8_t state,
                          uint8_t phase,
                          uint8_t speed_percent,

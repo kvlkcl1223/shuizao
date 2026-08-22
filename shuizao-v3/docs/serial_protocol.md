@@ -134,7 +134,8 @@ prints "#OK;",0
 
 - `percent`：吸取速度百分比，范围 `10~100`。
 - 小于 10 会按 10 处理，大于 100 会按 100 处理。
-- 速度不保存，MCU 复位后恢复 `APP_DEFAULT_PUMP_SPEED_PERCENT`。
+- `#SPD` 先写入 RAM，发送 `#SAVE,SPD;` 或 `#SAVE,ALL;` 后保存到 Flash。
+- MCU 复位后优先读取 Flash 保存速度；Flash 无效时恢复 `APP_DEFAULT_PUMP_SPEED_PERCENT`。
 - 该命令只影响自动吸取和预留 10ml 补吸，不影响自动喷淋。
 - 自动喷淋速度使用代码内置 `APP_SPRAY_SPEED_PERCENT`，需要改喷淋速度时修改固件宏并重新烧录。
 
@@ -188,7 +189,18 @@ prints "#OK;",0
 #SET,Z_DN_HOME_800_MS,3000;
 ```
 
-### 3.3 读取指定喷淋档位
+### 3.3 读取吸取泵速
+
+```text
+#GET,SPD;
+```
+
+含义：
+
+- MCU 同时回填 `n_speed.val` 和 `h_speed.val`。
+- 该值是当前自动吸取、预留 10ml 补吸、以及手动泵命令速度为 `0` 时使用的泵速。
+
+### 3.4 读取指定喷淋档位
 
 ```text
 #GET,SPRAY_MS,<volume>;
@@ -204,8 +216,8 @@ prints "#OK;",0
 - MCU 不保存“当前正在调节哪个档位”的状态。
 - HMI 需要自己用 `n_spray_vol.val` 保存当前选择的档位，并在读取和滑轴设置命令中把该值带给 MCU。
 - 自动运行时，固件会按 `#START` 的体积自动选择对应档位的喷淋时间，不依赖 HMI 当前停留在哪个调试档位。
-- 每个体积档位有 6 个泵时间；同一个体积档位内部的三段喷淋仍共用这 6 个时间。
-- `#SAVE,SPRAY_MS;` 保存全部 4 个档位共 24 个喷淋时间。
+- 每个体积档位有 6 个第一段喷淋时间；第二段 300ml 和第三段 800ml 使用程序固定表，不受屏幕调节影响。
+- `#SAVE,SPRAY_MS;` 保存全部 4 个档位共 24 个第一段喷淋时间。
 
 ## 4. 停止、回原点和复位
 
@@ -284,6 +296,7 @@ prints "#OK;",0
 #GET,STATE;
 #GET,SPRAY_MS,<volume>;
 #GET,ZVIRT_MS;
+#GET,SPD;
 ```
 
 当前实现中，查询命令会触发 MCU 立即刷新屏幕控件。
@@ -292,19 +305,21 @@ prints "#OK;",0
 - `#GET,STATE;`：刷新状态、报警、速度、阶段和进度。
 - `#GET,SPRAY_MS,<volume>;`：刷新指定体积档位、6 个喷淋时间滑轴和 6 个喷淋时间数值控件。
 - `#GET,ZVIRT_MS;`：刷新 4 个 Z 轴虚拟位置时间滑轴和数值控件。
+- `#GET,SPD;` 或 `#GET,SPEED;`：刷新当前吸取泵速 `n_speed.val` 和 `h_speed.val`。
 
 ## 7. 保存命令
 
 ```text
 #SAVE,SPRAY_MS;
 #SAVE,ZVIRT_MS;
+#SAVE,SPD;
 #SAVE,ALL;
 ```
 
 含义：
 
-- `#SAVE,SPRAY_MS;`、`#SAVE,ZVIRT_MS;`、`#SAVE,ALL;` 当前都会整包保存全部可保存参数。
-- 保存内容包括 4 个体积档位共 24 个喷淋时间，以及 4 个 Z 轴虚拟位置时间。
+- `#SAVE,SPRAY_MS;`、`#SAVE,ZVIRT_MS;`、`#SAVE,SPD;`、`#SAVE,ALL;` 当前都会整包保存全部可保存参数。
+- 保存内容包括 4 个体积档位共 24 个第一段喷淋时间、4 个 Z 轴虚拟位置时间，以及当前吸取泵速。
 - 这样做是为了避免 Flash 中喷淋参数和 Z 虚拟位置参数互相覆盖。
 - MCU 初始化时优先从 Flash 读取；Flash 记录无效时使用 `app_config.h` 默认值。
 - 自动流程运行中发送保存命令会被拒绝并显示 `BUSY`。
@@ -326,6 +341,7 @@ FF FF FF
 | `APP_SCREEN_STATE_OBJ` | `n_state` | 状态码 |
 | `APP_SCREEN_PHASE_OBJ` | `n_phase` | 当前阶段，空闲时为 0 |
 | `APP_SCREEN_SPEED_OBJ` | `n_speed` | 当前吸取速度百分比 |
+| `APP_SCREEN_SPEED_SLIDER_OBJ` | `h_speed` | 当前吸取速度滑轴 |
 | `APP_SCREEN_PGMASK_OBJ` | `n_pgmask` | 16 路 PG 有效位掩码 |
 | `APP_SCREEN_KEEP10_OBJ` | `n_keep10` | 是否预留 10ml |
 | `APP_SCREEN_ALARM_OBJ` | `n_alarm` | 报警码 |
@@ -525,13 +541,27 @@ prints ";",0
 
 ### 13.2 吸取速度设置页面
 
-建议放置滑条或数字输入 `n_speed_set`，范围限制为 `10~100`。确认按钮事件：
+建议使用滑轴 `h_speed` 和数值控件 `n_speed`，范围都限制为 `10~100`。滑轴弹起事件先同步数值控件，再在屏幕内拼完整字符串，最后一次性发送：
 
 ```text
-cov n_speed_set.val,t_tmp.txt,0
-prints "#SPD,",0
-prints t_tmp.txt,0
-prints ";",0
+n_speed.val=h_speed.val
+cov h_speed.val,t_tmp.txt,0
+t_cmd.txt="#SPD,"
+t_cmd.txt+=t_tmp.txt
+t_cmd.txt+=";"
+prints t_cmd.txt,0
+```
+
+读取按钮按下或页面打开事件：
+
+```text
+prints "#GET,SPD;",0
+```
+
+保存按钮按下或弹起事件：
+
+```text
+prints "#SAVE,SPD;",0
 ```
 
 ### 13.3 时间设置页面

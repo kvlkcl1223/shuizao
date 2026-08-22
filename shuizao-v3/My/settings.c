@@ -9,8 +9,8 @@
  */
 
 #define SETTINGS_MAGIC          0x535A5633UL /* "SZV3" */
-#define SETTINGS_VERSION        3U
-#define SETTINGS_RECORD_WORDS   (3U + (APP_SPRAY_PROFILE_COUNT * APP_PUMP_COUNT) + APP_ZVIRT_COUNT + 1U)
+#define SETTINGS_VERSION        4U
+#define SETTINGS_VERSION_V3     3U
 
 typedef struct {
     uint32_t magic;
@@ -20,22 +20,41 @@ typedef struct {
     uint32_t spray_ms[APP_SPRAY_PROFILE_COUNT][APP_PUMP_COUNT];
     uint32_t zvirt_ms[APP_ZVIRT_COUNT];
     uint32_t checksum;
+} Settings_RecordV3;
+
+typedef struct {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t length;
+    uint32_t reserved;
+    uint32_t spray_ms[APP_SPRAY_PROFILE_COUNT][APP_PUMP_COUNT];
+    uint32_t zvirt_ms[APP_ZVIRT_COUNT];
+    uint32_t pump_speed_percent;
+    uint32_t checksum;
 } Settings_Record;
 
-static uint32_t Settings_Checksum(const Settings_Record *record)
+static uint32_t Settings_ChecksumWords(const uint32_t *words, uint32_t word_count)
 {
-    const uint32_t *words = (const uint32_t *)record;
     uint32_t checksum = 0xA5A55A5AUL;
 
-    /*
-     * 校验范围不包含最后的 checksum 字段。
-     * 这里结构体只包含 32 位和两个 16 位字段，总长度保持 4 字节对齐。
-     */
-    for (uint8_t i = 0U; i < (SETTINGS_RECORD_WORDS - 1U); i++) {
+    /* 校验范围不包含最后的 checksum 字段。 */
+    for (uint32_t i = 0U; i < word_count; i++) {
         checksum ^= words[i] + 0x9E3779B9UL + (checksum << 6) + (checksum >> 2);
     }
 
     return checksum;
+}
+
+static uint32_t Settings_Checksum(const Settings_Record *record)
+{
+    return Settings_ChecksumWords((const uint32_t *)record,
+                                  (uint32_t)(sizeof(Settings_Record) / sizeof(uint32_t) - 1U));
+}
+
+static uint32_t Settings_ChecksumV3(const Settings_RecordV3 *record)
+{
+    return Settings_ChecksumWords((const uint32_t *)record,
+                                  (uint32_t)(sizeof(Settings_RecordV3) / sizeof(uint32_t) - 1U));
 }
 
 static bool Settings_IsTimeValid(uint32_t value)
@@ -50,6 +69,11 @@ static bool Settings_IsTimeValid(uint32_t value)
 static bool Settings_IsZVirtTimeValid(uint32_t value)
 {
     return value >= APP_ZVIRT_TIME_MIN_MS && value <= APP_ZVIRT_TIME_MAX_MS;
+}
+
+static bool Settings_IsPumpSpeedValid(uint32_t value)
+{
+    return value >= APP_MIN_PUMP_SPEED_PERCENT && value <= APP_MAX_PUMP_SPEED_PERCENT;
 }
 
 static bool Settings_RecordIsValid(const Settings_Record *record)
@@ -78,36 +102,92 @@ static bool Settings_RecordIsValid(const Settings_Record *record)
         }
     }
 
+    if (!Settings_IsPumpSpeedValid(record->pump_speed_percent)) {
+        return false;
+    }
+
     return record->checksum == Settings_Checksum(record);
 }
 
-bool Settings_LoadAll(uint32_t spray_ms[APP_SPRAY_PROFILE_COUNT][APP_PUMP_COUNT],
-                      uint32_t zvirt_ms[APP_ZVIRT_COUNT])
+static bool Settings_RecordV3IsValid(const Settings_RecordV3 *record)
 {
-    const Settings_Record *record = (const Settings_Record *)APP_SETTINGS_FLASH_ADDR;
+    if (record == 0) {
+        return false;
+    }
 
-    if (spray_ms == 0 || zvirt_ms == 0 || !Settings_RecordIsValid(record)) {
+    if (record->magic != SETTINGS_MAGIC ||
+        record->version != SETTINGS_VERSION_V3 ||
+        record->length != sizeof(Settings_RecordV3)) {
         return false;
     }
 
     for (uint8_t profile = 0U; profile < APP_SPRAY_PROFILE_COUNT; profile++) {
         for (uint8_t pump = 0U; pump < APP_PUMP_COUNT; pump++) {
-            spray_ms[profile][pump] = record->spray_ms[profile][pump];
+            if (!Settings_IsTimeValid(record->spray_ms[profile][pump])) {
+                return false;
+            }
         }
     }
 
     for (uint8_t i = 0U; i < APP_ZVIRT_COUNT; i++) {
-        zvirt_ms[i] = record->zvirt_ms[i];
+        if (!Settings_IsZVirtTimeValid(record->zvirt_ms[i])) {
+            return false;
+        }
     }
 
-    return true;
+    return record->checksum == Settings_ChecksumV3(record);
+}
+
+bool Settings_LoadAll(uint32_t spray_ms[APP_SPRAY_PROFILE_COUNT][APP_PUMP_COUNT],
+                      uint32_t zvirt_ms[APP_ZVIRT_COUNT],
+                      uint8_t *pump_speed_percent)
+{
+    const Settings_Record *record = (const Settings_Record *)APP_SETTINGS_FLASH_ADDR;
+    const Settings_RecordV3 *record_v3 = (const Settings_RecordV3 *)APP_SETTINGS_FLASH_ADDR;
+
+    if (spray_ms == 0 || zvirt_ms == 0 || pump_speed_percent == 0) {
+        return false;
+    }
+
+    if (Settings_RecordIsValid(record)) {
+        for (uint8_t profile = 0U; profile < APP_SPRAY_PROFILE_COUNT; profile++) {
+            for (uint8_t pump = 0U; pump < APP_PUMP_COUNT; pump++) {
+                spray_ms[profile][pump] = record->spray_ms[profile][pump];
+            }
+        }
+
+        for (uint8_t i = 0U; i < APP_ZVIRT_COUNT; i++) {
+            zvirt_ms[i] = record->zvirt_ms[i];
+        }
+
+        *pump_speed_percent = (uint8_t)record->pump_speed_percent;
+        return true;
+    }
+
+    if (Settings_RecordV3IsValid(record_v3)) {
+        for (uint8_t profile = 0U; profile < APP_SPRAY_PROFILE_COUNT; profile++) {
+            for (uint8_t pump = 0U; pump < APP_PUMP_COUNT; pump++) {
+                spray_ms[profile][pump] = record_v3->spray_ms[profile][pump];
+            }
+        }
+
+        for (uint8_t i = 0U; i < APP_ZVIRT_COUNT; i++) {
+            zvirt_ms[i] = record_v3->zvirt_ms[i];
+        }
+
+        *pump_speed_percent = APP_DEFAULT_PUMP_SPEED_PERCENT;
+        return true;
+    }
+
+    return false;
 }
 
 bool Settings_LoadSprayMs(uint32_t spray_ms[APP_SPRAY_PROFILE_COUNT][APP_PUMP_COUNT])
 {
     uint32_t zvirt_ms[APP_ZVIRT_COUNT];
+    uint8_t pump_speed_percent;
 
-    return Settings_LoadAll(spray_ms, zvirt_ms);
+    return Settings_LoadAll(spray_ms, zvirt_ms, &pump_speed_percent);
 }
 
 static bool Settings_ProgramHalfWord(uint32_t address, uint16_t value)
@@ -120,7 +200,8 @@ static bool Settings_ProgramHalfWord(uint32_t address, uint16_t value)
 }
 
 bool Settings_SaveAll(const uint32_t spray_ms[APP_SPRAY_PROFILE_COUNT][APP_PUMP_COUNT],
-                      const uint32_t zvirt_ms[APP_ZVIRT_COUNT])
+                      const uint32_t zvirt_ms[APP_ZVIRT_COUNT],
+                      uint8_t pump_speed_percent)
 {
     Settings_Record record;
     FLASH_EraseInitTypeDef erase_init;
@@ -130,7 +211,8 @@ bool Settings_SaveAll(const uint32_t spray_ms[APP_SPRAY_PROFILE_COUNT][APP_PUMP_
     uint32_t half_word_count;
     bool ok = true;
 
-    if (spray_ms == 0 || zvirt_ms == 0) {
+    if (spray_ms == 0 || zvirt_ms == 0 ||
+        !Settings_IsPumpSpeedValid(pump_speed_percent)) {
         return false;
     }
 
@@ -156,6 +238,7 @@ bool Settings_SaveAll(const uint32_t spray_ms[APP_SPRAY_PROFILE_COUNT][APP_PUMP_
         record.zvirt_ms[i] = zvirt_ms[i];
     }
 
+    record.pump_speed_percent = pump_speed_percent;
     record.checksum = Settings_Checksum(&record);
 
     HAL_FLASH_Unlock();
@@ -191,5 +274,5 @@ bool Settings_SaveSprayMs(const uint32_t spray_ms[APP_SPRAY_PROFILE_COUNT][APP_P
         zvirt_ms[i] = APP_ZVIRT_TIME_DEFAULT_MS;
     }
 
-    return Settings_SaveAll(spray_ms, zvirt_ms);
+    return Settings_SaveAll(spray_ms, zvirt_ms, APP_DEFAULT_PUMP_SPEED_PERCENT);
 }

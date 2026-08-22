@@ -140,10 +140,14 @@ static const char *Logger_CommandName(Protocol_CommandType type)
         return "GET_SPRAY_MS";
     case PROTOCOL_CMD_GET_ZVIRT_MS:
         return "GET_ZVIRT_MS";
+    case PROTOCOL_CMD_GET_SPEED:
+        return "GET_SPD";
     case PROTOCOL_CMD_SAVE_SPRAY_MS:
         return "SAVE_SPRAY_MS";
     case PROTOCOL_CMD_SAVE_ZVIRT_MS:
         return "SAVE_ZVIRT_MS";
+    case PROTOCOL_CMD_SAVE_SPEED:
+        return "SAVE_SPD";
     case PROTOCOL_CMD_SAVE_ALL:
         return "SAVE_ALL";
     case PROTOCOL_CMD_RESET:
