@@ -158,7 +158,7 @@ prints "#OK;",0
 - `time_ms`：毫秒，固件会夹紧到 `0~6000`。
 - `volume`：喷淋时间所属体积档位，只能是 `200/150/100/50`。
 - `ASP_MS` 和 `TRIM10_MS` 不保存，断电或复位后恢复 `My/app_config.h` 中默认值。新的分阶段吸取停留时间使用 `APP_ASP_DWELL_800_MS` 到 `APP_ASP_DWELL_50_MS`，暂不由 HMI 修改。
-- `SPRAY1_MS` 到 `SPRAY6_MS` 必须携带体积档位，写入该档位对应的 RAM 表；发送 `#SAVE,SPRAY_MS;` 后把 4 个档位全部写入 Flash。
+- `SPRAY1_MS` 到 `SPRAY6_MS` 必须携带体积档位，写入该档位对应的第一段喷淋 RAM 表；发送 `#SAVE,SPRAY_MS;` 后把 4 个档位的第一段喷淋时间写入 Flash。
 - `Z_DN_HOME_800_MS` 等 Z 虚拟位置时间会夹紧到 `1000~20000ms`，默认 `3000ms`。
 - 自动流程运行中发送 `#SET` 会被拒绝并返回 BUSY 状态。
 
@@ -168,12 +168,12 @@ prints "#OK;",0
 |---|---|---|
 | `ASP_MS` 或 `ASPIRATE_MS` | 旧版吸取固定时间，当前仅保留协议兼容 | `APP_ASPIRATE_PHASE_MS` |
 | `TRIM10_MS` 或 `TRIM_MS` | 预留 10ml 时的定时补吸时间 | `APP_TRIM_10ML_MS` |
-| `SPRAY1_MS` | 当前档位的泵 1 喷淋补偿时间，三段喷淋共用 | `APP_SPRAY_PUMP1_MS` 或 Flash 保存值 |
-| `SPRAY2_MS` | 当前档位的泵 2 喷淋补偿时间，三段喷淋共用 | `APP_SPRAY_PUMP2_MS` 或 Flash 保存值 |
-| `SPRAY3_MS` | 当前档位的泵 3 喷淋补偿时间，三段喷淋共用 | `APP_SPRAY_PUMP3_MS` 或 Flash 保存值 |
-| `SPRAY4_MS` | 当前档位的泵 4 喷淋补偿时间，三段喷淋共用 | `APP_SPRAY_PUMP4_MS` 或 Flash 保存值 |
-| `SPRAY5_MS` | 当前档位的泵 5 喷淋补偿时间，三段喷淋共用 | `APP_SPRAY_PUMP5_MS` 或 Flash 保存值 |
-| `SPRAY6_MS` | 当前档位的泵 6 喷淋补偿时间，三段喷淋共用 | `APP_SPRAY_PUMP6_MS` 或 Flash 保存值 |
+| `SPRAY1_MS` | 当前档位第一段喷淋的泵 1 补偿时间 | `APP_SPRAY_PUMP1_MS` 或 Flash 保存值 |
+| `SPRAY2_MS` | 当前档位第一段喷淋的泵 2 补偿时间 | `APP_SPRAY_PUMP2_MS` 或 Flash 保存值 |
+| `SPRAY3_MS` | 当前档位第一段喷淋的泵 3 补偿时间 | `APP_SPRAY_PUMP3_MS` 或 Flash 保存值 |
+| `SPRAY4_MS` | 当前档位第一段喷淋的泵 4 补偿时间 | `APP_SPRAY_PUMP4_MS` 或 Flash 保存值 |
+| `SPRAY5_MS` | 当前档位第一段喷淋的泵 5 补偿时间 | `APP_SPRAY_PUMP5_MS` 或 Flash 保存值 |
+| `SPRAY6_MS` | 当前档位第一段喷淋的泵 6 补偿时间 | `APP_SPRAY_PUMP6_MS` 或 Flash 保存值 |
 | `Z_DN_HOME_800_MS` | HOME/PG3 下行到 800ml 虚拟位 | `APP_ZVIRT_TIME_DEFAULT_MS` 或 Flash 保存值 |
 | `Z_DN_800_300_MS` | 800ml 虚拟位下行到 300ml 虚拟位 | `APP_ZVIRT_TIME_DEFAULT_MS` 或 Flash 保存值 |
 | `Z_UP_300_800_MS` | 300ml 虚拟位上行到 800ml 虚拟位 | `APP_ZVIRT_TIME_DEFAULT_MS` 或 Flash 保存值 |
@@ -486,9 +486,10 @@ HOME(PG3) -> 800(虚拟) -> 700(虚拟) -> 600(虚拟) -> 500(虚拟) -> 400(虚
 - 第二次：固定 300ml 虚拟位置喷淋。
 - 第三次：固定 800ml 虚拟位置喷淋。
 - 50ml 的第一次喷淋没有下一档，保持在 50ml 原地喷。
-- 200/150/100/50 四个自动档位各有一套 6 泵补偿时间。上电时优先使用 Flash 保存值；没有有效保存值时使用 `My/app_config.c` 的 `APP_SPRAY_PUMP_MS` 默认值填充每个档位。
+- 200/150/100/50 四个自动档位各有一套第一段 6 泵补偿时间。上电时优先使用 Flash 保存值；没有有效保存值时使用 `My/app_config.c` 的 `APP_SPRAY_PUMP_MS` 默认值填充每个档位。
 - 喷淋泵速不跟随 `#SPD`，固定使用 `My/app_config.h` 中的 `APP_SPRAY_SPEED_PERCENT`。
-- 同一个自动档位内部，三段喷淋共用该档位的同一套 6 泵补偿时间。
+- 第一段使用 HMI/Flash 可调时间；第二段 300ml 使用 `APP_SPRAY_STAGE2_PUMP_MS`；第三段 800ml 使用 `APP_SPRAY_STAGE3_PUMP_MS`。
+- 第二段和第三段也按 200/150/100/50 档位区分，并且每个泵独立，只能通过修改 `My/app_config.c` 的固定表调整。
 - 每段喷淋开始时 6 个泵同时启动，每个泵按自己的补偿时间停止；6 个泵全部停止后才进入下一段喷淋。
 
 ## 13. HMI 页面事件建议
@@ -556,7 +557,7 @@ prints t_tmp.txt,0
 prints ";",0
 ```
 
-喷淋补偿时间由 HMI 设置页面调整。你已定义滑轴 `h_spray1_ms` 到 `h_spray6_ms`，以及数值 `n_spray1_ms` 到 `n_spray6_ms`。
+第一段喷淋补偿时间由 HMI 设置页面调整。你已定义滑轴 `h_spray1_ms` 到 `h_spray6_ms`，以及数值 `n_spray1_ms` 到 `n_spray6_ms`。
 
 还需要新增两个显示控件：
 
@@ -649,9 +650,9 @@ prints "#SAVE,SPRAY_MS;",0
 
 注意：
 
-- 滑轴发送的 `SPRAY1_MS` 到 `SPRAY6_MS` 只会修改当前 `n_spray_vol` 对应的那一档。
-- 自动运行 `#START,100,0;` 时，MCU 使用 100ml 档位的 6 个喷淋时间。
-- 自动运行 `#START,50,0;` 时，MCU 使用 50ml 档位的 6 个喷淋时间。
+- 滑轴发送的 `SPRAY1_MS` 到 `SPRAY6_MS` 只会修改当前 `n_spray_vol` 对应档位的第一段喷淋时间。
+- 自动运行 `#START,100,0;` 时，MCU 第一段使用 100ml 档位的 6 个可调喷淋时间，第二段和第三段使用程序固定表。
+- 自动运行 `#START,50,0;` 时，MCU 第一段使用 50ml 档位的 6 个可调喷淋时间，第二段和第三段使用程序固定表。
 - HMI 当前调试页面选中哪个档位，不会影响正在自动运行的任务；自动任务只看 `#START` 的体积。
 
 ### 13.4 Z 虚拟位置时间调试页面

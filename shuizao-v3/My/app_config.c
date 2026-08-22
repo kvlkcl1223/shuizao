@@ -129,7 +129,7 @@ const uint16_t APP_SPRAY_PROFILE_VOLUMES[APP_SPRAY_PROFILE_COUNT] = {
     50U,
 };
 
-/* 三段喷淋共用同一套泵补偿时间。下标 0~5 对应泵 1~6，实测后只改这个表。 */
+/* 第一段喷淋默认泵补偿时间。屏幕调节和 Flash 保存只影响第一段。下标 0~5 对应泵 1~6。 */
 const uint32_t APP_SPRAY_PUMP_MS[APP_PUMP_COUNT] = {
     APP_SPRAY_PUMP1_MS,
     APP_SPRAY_PUMP2_MS,
@@ -137,4 +137,28 @@ const uint32_t APP_SPRAY_PUMP_MS[APP_PUMP_COUNT] = {
     APP_SPRAY_PUMP4_MS,
     APP_SPRAY_PUMP5_MS,
     APP_SPRAY_PUMP6_MS,
+};
+
+/*
+ * 第二段喷淋固定时间表，喷淋位置为 300ml 虚拟位置。
+ * 行顺序必须与 APP_SPRAY_PROFILE_VOLUMES 一致：200/150/100/50ml。
+ * 列下标 0~5 对应泵 1~6。现场调试第二段喷淋量时只改这里。
+ */
+const uint32_t APP_SPRAY_STAGE2_PUMP_MS[APP_SPRAY_PROFILE_COUNT][APP_PUMP_COUNT] = {
+    {5000U, 5000U, 5000U, 5000U, 5000U, 5000U}, /* 200ml */
+    {5000U, 5000U, 5000U, 5000U, 5000U, 5000U}, /* 150ml */
+    {5000U, 5000U, 5000U, 5000U, 5000U, 5000U}, /* 100ml */
+    {5000U, 5000U, 5000U, 5000U, 5000U, 5000U}, /* 50ml */
+};
+
+/*
+ * 第三段喷淋固定时间表，喷淋位置为 800ml 虚拟位置。
+ * 行顺序必须与 APP_SPRAY_PROFILE_VOLUMES 一致：200/150/100/50ml。
+ * 列下标 0~5 对应泵 1~6。现场调试第三段喷淋量时只改这里。
+ */
+const uint32_t APP_SPRAY_STAGE3_PUMP_MS[APP_SPRAY_PROFILE_COUNT][APP_PUMP_COUNT] = {
+    {5000U, 5000U, 5000U, 5000U, 5000U, 5000U}, /* 200ml */
+    {5000U, 5000U, 5000U, 5000U, 5000U, 5000U}, /* 150ml */
+    {5000U, 5000U, 5000U, 5000U, 5000U, 5000U}, /* 100ml */
+    {5000U, 5000U, 5000U, 5000U, 5000U, 5000U}, /* 50ml */
 };

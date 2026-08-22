@@ -36,7 +36,7 @@ static uint8_t app_aspirate_speed_percent = APP_DEFAULT_PUMP_SPEED_PERCENT;
 static uint32_t app_aspirate_phase_ms = APP_ASPIRATE_PHASE_MS;
 static uint32_t app_trim10_ms = APP_TRIM_10ML_MS;
 
-/* 4 个目标体积各自保存 6 个泵的喷淋补偿时间，下标：档位 0~3，泵 0~5。 */
+/* 4 个目标体积各自保存第一段 6 个泵的喷淋补偿时间，下标：档位 0~3，泵 0~5。 */
 static uint32_t app_spray_profile_ms[APP_SPRAY_PROFILE_COUNT][APP_PUMP_COUNT];
 static uint8_t app_spray_active_profile = 0U;
 
@@ -278,6 +278,23 @@ static uint32_t *App_ActiveSprayMs(void)
     return app_spray_profile_ms[app_spray_active_profile];
 }
 
+static const uint32_t *App_CurrentSprayMs(void)
+{
+    if (app_spray_active_profile >= APP_SPRAY_PROFILE_COUNT) {
+        return App_ActiveSprayMs();
+    }
+
+    if (app_phase_index == 1U) {
+        return APP_SPRAY_STAGE2_PUMP_MS[app_spray_active_profile];
+    }
+
+    if (app_phase_index == 2U) {
+        return APP_SPRAY_STAGE3_PUMP_MS[app_spray_active_profile];
+    }
+
+    return App_ActiveSprayMs();
+}
+
 static int8_t App_ZVirtParamIndex(Protocol_ParamTarget target)
 {
     switch (target) {
@@ -358,7 +375,7 @@ static const char *App_StateText(App_State state)
     case APP_STATE_MOVE_TO_SPRAY:
         return "MOVE SPRAY";
     case APP_STATE_SPRAYING:
-        /* 三段喷淋共用内置 6 泵补偿时间；每个泵按各自时间停止。 */
+        /* 当前喷淋段使用对应的 6 泵补偿时间；每个泵按各自时间停止。 */
         return "SPRAY";
     case APP_STATE_RETURN_HOME:
         return "RETURN";
@@ -905,7 +922,7 @@ static uint8_t App_DisplayPhase(void)
 static uint32_t App_GetSprayMaxMs(void)
 {
     uint32_t max_ms = 0U;
-    uint32_t *spray_ms = App_ActiveSprayMs();
+    const uint32_t *spray_ms = App_CurrentSprayMs();
 
     for (uint8_t i = 0U; i < APP_PUMP_COUNT; i++) {
         if (spray_ms[i] > max_ms) {
@@ -1413,7 +1430,7 @@ static void App_StartSprayPhaseZero(void)
 
 static void App_StartSprayPumps(void)
 {
-    uint32_t *spray_ms = App_ActiveSprayMs();
+    const uint32_t *spray_ms = App_CurrentSprayMs();
 
     App_SetState(APP_STATE_SPRAYING);
     app_spray_active_pump_mask = 0U;
@@ -1425,7 +1442,7 @@ static void App_StartSprayPumps(void)
                       Pump_ClampSpeedPercent(APP_SPRAY_SPEED_PERCENT),
                       PG_ReadMask());
 
-    /* 三段喷淋共用当前启动体积对应的 6 泵补偿时间：同开，按各自时间分别停止。 */
+    /* 第一段使用屏幕可调时间；第二段 300ml、第三段 800ml 使用程序固定表。 */
     for (uint8_t i = 0U; i < APP_PUMP_COUNT; i++) {
         if (spray_ms[i] > 0U) {
             Pump_RunOne(i, PUMP_DIR_OUT, Pump_ClampSpeedPercent(APP_SPRAY_SPEED_PERCENT));
@@ -1462,7 +1479,7 @@ static void App_AdvanceSprayPhase(void)
 static void App_TaskSpraying(void)
 {
     uint32_t elapsed = Elapsed(app_state_start_tick);
-    uint32_t *spray_ms = App_ActiveSprayMs();
+    const uint32_t *spray_ms = App_CurrentSprayMs();
 
     for (uint8_t i = 0U; i < APP_PUMP_COUNT; i++) {
         uint8_t pump_bit = (uint8_t)(1U << i);
@@ -1585,7 +1602,7 @@ static void App_TaskAuto(void)
         break;
 
     case APP_STATE_SPRAYING:
-        /* 三段喷淋共用内置 6 泵补偿时间。 */
+        /* 第一段使用屏幕可调时间，第二段和第三段使用程序固定时间。 */
         App_TaskSpraying();
         break;
 

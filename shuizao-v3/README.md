@@ -28,7 +28,7 @@
 - 第 8 路 DRV8870 备用。
 - 6 路蠕动泵当前作为一个泵组，同时同速同向动作。
 - 吸取泵速可通过屏幕设置，范围为 10% 到 100%；喷淋泵速使用代码内置值。
-- 喷淋补偿时间可以保存到 Flash；其他运行参数 MCU 复位或断电后恢复默认值。
+- 第一段喷淋补偿时间可以保存到 Flash；第二段和第三段喷淋时间在程序内固定配置，其他运行参数 MCU 复位或断电后恢复默认值。
 - 上电后默认自动复位到最高点，当前最高点为 PG3；屏幕发送 `#RESET;` 软件复位后也会执行同样的上电复位。
 - v3 当前不做校准流程，定时步进参数需要真机实测后写入 `My/app_config.c`。
 
@@ -236,19 +236,22 @@ Z 轴所有可能从上行切到下行、或从下行切到上行的动作，都
 
 注意：300ml 和 800ml 当前没有 PG 传感器，是虚拟位置，准确性依赖 Z 虚拟位置时间。当前开放调节 `HOME->800`、`800->300`、`300->800`、`200->300` 四段。
 
-4 个自动体积档位分别有一套 6 泵补偿时间：
+4 个自动体积档位的喷淋时间分三段管理：
 
-- RAM 运行表：`app_spray_profile_ms`
-- 默认时间表：`APP_SPRAY_PUMP_MS`
+- 第一段 RAM 运行表：`app_spray_profile_ms`
+- 第一段默认时间表：`APP_SPRAY_PUMP_MS`
+- 第二段 300ml 固定时间表：`APP_SPRAY_STAGE2_PUMP_MS`
+- 第三段 800ml 固定时间表：`APP_SPRAY_STAGE3_PUMP_MS`
 - 默认值位置：`My/app_config.c`
 - 档位顺序：`200/150/100/50`
 - 下标 `0~5` 对应泵 `1~6`
 - 自动运行时，MCU 按 `#START` 的体积选择对应档位的 6 个喷淋时间
-- 同一个体积档位内部，三段喷淋共用该档位的 6 个泵补偿时间
+- 屏幕 `#SET,SPRAYx_MS,<time>,<volume>` 只修改第一段喷淋时间
+- 第二段和第三段不受屏幕调节影响，需要修改程序内固定表
 - 每段喷淋开始时 6 个泵同时启动，每个泵按自己的补偿时间停止
 - 6 个泵全部停止后，才移动到下一段喷淋位置
 
-喷淋补偿时间可以通过串口屏滑轴修改。HMI 用本地变量 `n_spray_vol.val` 保存当前调节档位，读取时发送 `#GET,SPRAY_MS,<volume>;`，滑轴弹起时发送 `#SET,SPRAY1_MS,<time_ms>,<volume>;` 这类带体积的命令。点击保存按钮发送 `#SAVE,SPRAY_MS;` 后，4 个档位共 24 个喷淋时间一起写入 Flash。MCU 下次初始化时优先读取 Flash 保存值，Flash 无效时才使用 `APP_SPRAY_PUMP_MS` 默认值填充每个档位。
+第一段喷淋补偿时间可以通过串口屏滑轴修改。HMI 用本地变量 `n_spray_vol.val` 保存当前调节档位，读取时发送 `#GET,SPRAY_MS,<volume>;`，滑轴弹起时发送 `#SET,SPRAY1_MS,<time_ms>,<volume>;` 这类带体积的命令。点击保存按钮发送 `#SAVE,SPRAY_MS;` 后，4 个档位共 24 个第一段喷淋时间写入 Flash。MCU 下次初始化时优先读取 Flash 保存值，Flash 无效时才使用 `APP_SPRAY_PUMP_MS` 默认值填充第一段。
 
 ### 3.6 自动流程中的停止和急停
 
@@ -380,8 +383,8 @@ MCU 默认写这些控件名，定义在 `My/app_config.h`：
 | `n_keep10` | 数值 | 是否预留 10ml |
 | `n_alarm` | 数值 | 报警码 |
 | `j_progress` | 进度条 | 当前定时阶段进度 |
-| `h_spray1_ms` ~ `h_spray6_ms` | 滑轴 | 泵 1~6 喷淋补偿时间 |
-| `n_spray1_ms` ~ `n_spray6_ms` | 数值 | 泵 1~6 喷淋补偿时间 |
+| `h_spray1_ms` ~ `h_spray6_ms` | 滑轴 | 泵 1~6 第一段喷淋补偿时间 |
+| `n_spray1_ms` ~ `n_spray6_ms` | 数值 | 泵 1~6 第一段喷淋补偿时间 |
 
 Y 轴异常警告页面：
 
@@ -395,7 +398,7 @@ Y 轴异常警告页面：
 
 建议 HMI 用 `n_state.val` 和 `n_alarm.val` 做中文界面逻辑，不要依赖 `t6` 的英文短文本。
 
-喷淋补偿时间页面：
+第一段喷淋补偿时间页面：
 
 - 页面打开时先设置 `n_spray_vol.val`，再发送 `#GET,SPRAY_MS,<n_spray_vol>;`，MCU 会回填该档位的 6 个滑轴和 6 个数值控件。
 - 切换喷淋档位按钮只修改 HMI 本地的 `n_spray_vol.val` 和 `t_spray_vol.txt`，不直接发送串口命令。
@@ -674,7 +677,8 @@ const uint8_t APP_PUMP_OUT_DIRECTION = MOTOR_REVERSE;
 
 - 屏幕上的 `#SPD`、`#SET,ASP_MS` 和 `#SET,TRIM10_MS` 只在本次上电运行内生效，不保存。
 - `#SPD` 只改变自动吸取速度；自动喷淋速度固定使用 `APP_SPRAY_SPEED_PERCENT`。
-- 屏幕上的 `#SET,SPRAY1_MS,<time_ms>,<volume>` 到 `#SET,SPRAY6_MS,<time_ms>,<volume>` 会先修改指定体积档位的 RAM，`#SAVE,SPRAY_MS;` 才会把 4 个档位共 24 个喷淋补偿时间保存到 Flash。
+- 屏幕上的 `#SET,SPRAY1_MS,<time_ms>,<volume>` 到 `#SET,SPRAY6_MS,<time_ms>,<volume>` 会先修改指定体积档位的第一段 RAM，`#SAVE,SPRAY_MS;` 才会把 4 个档位共 24 个第一段喷淋补偿时间保存到 Flash。
+- 第二段 300ml 和第三段 800ml 的喷淋补偿时间不受屏幕滑轴影响，在 `My/app_config.c` 的 `APP_SPRAY_STAGE2_PUMP_MS`、`APP_SPRAY_STAGE3_PUMP_MS` 中按体积档位和泵编号分别修改。
 - 屏幕上的 `#SET,Z_DN_HOME_800_MS,<time_ms>`、`#SET,Z_DN_800_300_MS,<time_ms>`、`#SET,Z_UP_300_800_MS,<time_ms>`、`#SET,Z_UP_200_300_MS,<time_ms>` 会先修改 RAM，`#SAVE,ZVIRT_MS;` 或 `#SAVE,ALL;` 写入 Flash。
 - 如果调试后确定了稳定工艺参数，应把默认值写回 `My/app_config.h`。
 - 若 Z 轴实际移动距离很长导致误报超时，调大 `APP_Z_MOVE_TIMEOUT_MS` 或 `APP_HOME_TIMEOUT_MS`。
@@ -937,7 +941,7 @@ return PG_ReadRaw(id) == GPIO_PIN_RESET;
 
 - 6 路泵不区分泵组，全部同时运行。
 - 吸取停留时间已经按 800/700/600/500/400/300/200/150/100/50 分开写成代码默认值，暂不支持 HMI 调节和 Flash 保存。
-- 同一个自动体积档位内部，三段喷淋共用该档位的 6 泵补偿时间。
+- 同一个自动体积档位内部，第一段使用屏幕/Flash 可调的 6 泵补偿时间；第二段和第三段使用程序固定的 6 泵补偿时间。
 - 真实 PG 段的定位吸取已由 `APP_ASPIRATE_STAGES` 控制，`precise_aspirate` 字段保留但当前不作为主流程判断依据。
 - `keep10` 不保存，每次 START 时由屏幕传入。
 - 运行时设置的吸取速度和旧版 `ASP_MS` 不保存。
@@ -984,5 +988,5 @@ arm-none-eabi-gcc -mcpu=cortex-m3 -mthumb -std=c99 -Wall -Wextra -finput-charset
 - 第二、第三次喷淋固定位置错了改 `APP_SPRAY_FIXED_STAGE2_POS` 和 `APP_SPRAY_FIXED_STAGE3_POS`。
 - `#SET,ASP_MS`、`#SET,TRIM10_MS` 和 `#SPD` 都不保存，复位后会恢复默认值。
 - `#SPD` 不影响喷淋；喷淋速度需要修改 `APP_SPRAY_SPEED_PERCENT` 后重新烧录。
-- `#SET,SPRAY1_MS,<time_ms>,<volume>` 到 `#SET,SPRAY6_MS,<time_ms>,<volume>` 只改指定体积档位的 RAM；`#SAVE,SPRAY_MS;` 会保存 4 个档位共 24 个喷淋补偿时间到 Flash。
+- `#SET,SPRAY1_MS,<time_ms>,<volume>` 到 `#SET,SPRAY6_MS,<time_ms>,<volume>` 只改指定体积档位的第一段 RAM；`#SAVE,SPRAY_MS;` 会保存 4 个档位共 24 个第一段喷淋补偿时间到 Flash。
 - 当前没有 10ml 光电位逻辑，预留 10ml 是自动流程结束后的人工补加逻辑。
