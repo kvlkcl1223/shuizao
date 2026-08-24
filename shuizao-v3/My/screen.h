@@ -40,8 +40,11 @@ void Screen_UpdateSprayTimes(const uint32_t *spray_ms, uint16_t volume_ml);
 /* 同步 4 个 Z 轴虚拟位置时间到 HMI 的滑轴和数值控件。 */
 void Screen_UpdateZVirtTimes(const uint32_t *zvirt_ms);
 
-/* 同步当前吸取/手动泵速到 HMI。 */
+/* 同步当前自动吸取泵速到 HMI。 */
 void Screen_UpdatePumpSpeed(uint8_t speed_percent);
+
+/* 同步当前手动泵速到 HMI。 */
+void Screen_UpdateManualPumpSpeed(uint8_t speed_percent);
 
 /* 批量刷新状态、阶段、速度、PG 掩码、预留 10ml 标志、报警和进度。 */
 void Screen_UpdateStatus(uint8_t state,

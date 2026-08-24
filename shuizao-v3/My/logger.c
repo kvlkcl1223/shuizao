@@ -128,6 +128,8 @@ static const char *Logger_CommandName(Protocol_CommandType type)
         return "OK";
     case PROTOCOL_CMD_SPEED_SET:
         return "SPD";
+    case PROTOCOL_CMD_MANUAL_SPEED_SET:
+        return "MSPD";
     case PROTOCOL_CMD_SET_PARAM:
         return "SET";
     case PROTOCOL_CMD_MANUAL:
@@ -142,12 +144,16 @@ static const char *Logger_CommandName(Protocol_CommandType type)
         return "GET_ZVIRT_MS";
     case PROTOCOL_CMD_GET_SPEED:
         return "GET_SPD";
+    case PROTOCOL_CMD_GET_MANUAL_SPEED:
+        return "GET_MSPD";
     case PROTOCOL_CMD_SAVE_SPRAY_MS:
         return "SAVE_SPRAY_MS";
     case PROTOCOL_CMD_SAVE_ZVIRT_MS:
         return "SAVE_ZVIRT_MS";
     case PROTOCOL_CMD_SAVE_SPEED:
         return "SAVE_SPD";
+    case PROTOCOL_CMD_SAVE_MANUAL_SPEED:
+        return "SAVE_MSPD";
     case PROTOCOL_CMD_SAVE_ALL:
         return "SAVE_ALL";
     case PROTOCOL_CMD_RESET:
@@ -382,6 +388,13 @@ void Logger_Command(const Protocol_Command *command)
     case PROTOCOL_CMD_SPEED_SET:
         (void)snprintf(line + strlen(line), sizeof(line) - strlen(line),
                        "rx=SPD percent=%u pgmask=0x%04X\r\n",
+                       command->speed_percent,
+                       pgmask);
+        break;
+
+    case PROTOCOL_CMD_MANUAL_SPEED_SET:
+        (void)snprintf(line + strlen(line), sizeof(line) - strlen(line),
+                       "rx=MSPD percent=%u pgmask=0x%04X\r\n",
                        command->speed_percent,
                        pgmask);
         break;

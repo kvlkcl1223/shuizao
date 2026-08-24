@@ -259,11 +259,19 @@ static void ParseFrame(char *frame)
         command.type = PROTOCOL_CMD_OK;
         QueuePush(&command);
     } else if (StringEquals(tokens[0], "SPD")) {
-        /* #SPD,75; 设置全部蠕动泵速度百分比。 */
+        /* #SPD,75; 设置自动吸取泵速度百分比。 */
         if (token_count < 2U) {
             return;
         }
         command.type = PROTOCOL_CMD_SPEED_SET;
+        command.speed_percent = ParsePercent(tokens[1], 0U);
+        QueuePush(&command);
+    } else if (StringEquals(tokens[0], "MSPD")) {
+        /* #MSPD,75; 设置手动泵默认速度百分比。 */
+        if (token_count < 2U) {
+            return;
+        }
+        command.type = PROTOCOL_CMD_MANUAL_SPEED_SET;
         command.speed_percent = ParsePercent(tokens[1], 0U);
         QueuePush(&command);
     } else if (StringEquals(tokens[0], "SET")) {
@@ -290,6 +298,9 @@ static void ParseFrame(char *frame)
         } else if (StringEquals(tokens[1], "SPD") ||
                    StringEquals(tokens[1], "SPEED")) {
             command.type = PROTOCOL_CMD_GET_SPEED;
+        } else if (StringEquals(tokens[1], "MSPD") ||
+                   StringEquals(tokens[1], "MANUAL_SPEED")) {
+            command.type = PROTOCOL_CMD_GET_MANUAL_SPEED;
         } else {
             return;
         }
@@ -305,6 +316,9 @@ static void ParseFrame(char *frame)
         } else if (StringEquals(tokens[1], "SPD") ||
                    StringEquals(tokens[1], "SPEED")) {
             command.type = PROTOCOL_CMD_SAVE_SPEED;
+        } else if (StringEquals(tokens[1], "MSPD") ||
+                   StringEquals(tokens[1], "MANUAL_SPEED")) {
+            command.type = PROTOCOL_CMD_SAVE_MANUAL_SPEED;
         } else if (StringEquals(tokens[1], "ALL")) {
             command.type = PROTOCOL_CMD_SAVE_ALL;
         } else {

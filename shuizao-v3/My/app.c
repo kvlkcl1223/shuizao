@@ -31,6 +31,7 @@ static App_Alarm app_alarm = APP_ALARM_NONE;
 static uint8_t app_keep10 = 0U;
 static uint16_t app_manual_reserved_ml = 0U;
 static uint8_t app_aspirate_speed_percent = APP_DEFAULT_PUMP_SPEED_PERCENT;
+static uint8_t app_manual_pump_speed_percent = APP_DEFAULT_PUMP_SPEED_PERCENT;
 
 /* HMI 可临时修改的工艺时间；吸取和 10ml 补吸不写入 Flash，断电或复位后恢复默认值。 */
 static uint32_t app_aspirate_phase_ms = APP_ASPIRATE_PHASE_MS;
@@ -1053,9 +1054,13 @@ static void App_HandleManual(const Protocol_Command *command)
         return;
     }
 
-    /* 手动命令未带速度时使用当前全局泵速。 */
+    /* 手动泵命令未带速度时使用手动泵速；手动 Z 轴保留旧逻辑，使用自动吸取速度。 */
     if (speed == 0U) {
-        speed = app_aspirate_speed_percent;
+        if (command->manual_target == PROTOCOL_MANUAL_TARGET_PUMP) {
+            speed = app_manual_pump_speed_percent;
+        } else {
+            speed = app_aspirate_speed_percent;
+        }
     }
     speed = Pump_ClampSpeedPercent(speed);
 
@@ -1211,7 +1216,10 @@ static void App_HandleSaveSprayTimes(void)
         return;
     }
 
-    if (Settings_SaveAll(app_spray_profile_ms, app_zvirt_ms, app_aspirate_speed_percent)) {
+    if (Settings_SaveAll(app_spray_profile_ms,
+                         app_zvirt_ms,
+                         app_aspirate_speed_percent,
+                         app_manual_pump_speed_percent)) {
         app_alarm = APP_ALARM_NONE;
         Logger_Info("SAVE", "spray_ms result=ok");
         Screen_ShowMessage("SAVE OK");
@@ -1236,7 +1244,10 @@ static void App_HandleSaveZVirtTimes(void)
         return;
     }
 
-    if (Settings_SaveAll(app_spray_profile_ms, app_zvirt_ms, app_aspirate_speed_percent)) {
+    if (Settings_SaveAll(app_spray_profile_ms,
+                         app_zvirt_ms,
+                         app_aspirate_speed_percent,
+                         app_manual_pump_speed_percent)) {
         app_alarm = APP_ALARM_NONE;
         Logger_Info("SAVE", "zvirt_ms result=ok");
         Screen_ShowMessage("SAVE OK");
@@ -1262,7 +1273,10 @@ static void App_HandleSavePumpSpeed(void)
         return;
     }
 
-    if (Settings_SaveAll(app_spray_profile_ms, app_zvirt_ms, app_aspirate_speed_percent)) {
+    if (Settings_SaveAll(app_spray_profile_ms,
+                         app_zvirt_ms,
+                         app_aspirate_speed_percent,
+                         app_manual_pump_speed_percent)) {
         app_alarm = APP_ALARM_NONE;
         Logger_Info("SAVE", "speed result=ok");
         Screen_ShowMessage("SAVE OK");
@@ -1275,6 +1289,35 @@ static void App_HandleSavePumpSpeed(void)
     }
 
     Screen_UpdatePumpSpeed(app_aspirate_speed_percent);
+    App_ReportStatus(true);
+}
+
+static void App_HandleSaveManualPumpSpeed(void)
+{
+    if (App_IsAutoRunning()) {
+        app_alarm = APP_ALARM_BUSY;
+        Logger_Info("SAVE", "rejected reason=BUSY");
+        Screen_ShowMessage("BUSY");
+        Screen_ShowAlarm((uint16_t)app_alarm);
+        return;
+    }
+
+    if (Settings_SaveAll(app_spray_profile_ms,
+                         app_zvirt_ms,
+                         app_aspirate_speed_percent,
+                         app_manual_pump_speed_percent)) {
+        app_alarm = APP_ALARM_NONE;
+        Logger_Info("SAVE", "manual_speed result=ok");
+        Screen_ShowMessage("SAVE OK");
+        Screen_ShowAlarm((uint16_t)app_alarm);
+    } else {
+        app_alarm = APP_ALARM_SAVE_FAILED;
+        Logger_Info("SAVE", "manual_speed result=failed");
+        Screen_ShowMessage("SAVE ERR");
+        Screen_ShowAlarm((uint16_t)app_alarm);
+    }
+
+    Screen_UpdateManualPumpSpeed(app_manual_pump_speed_percent);
     App_ReportStatus(true);
 }
 
@@ -1342,6 +1385,14 @@ static void App_HandleCommand(const Protocol_Command *command)
         App_ReportStatus(true);
         break;
 
+    case PROTOCOL_CMD_MANUAL_SPEED_SET:
+        app_manual_pump_speed_percent = Pump_ClampSpeedPercent(command->speed_percent);
+        app_alarm = APP_ALARM_NONE;
+        Logger_Value("SET", "manual_pump_speed", app_manual_pump_speed_percent);
+        Screen_UpdateManualPumpSpeed(app_manual_pump_speed_percent);
+        App_ReportStatus(true);
+        break;
+
     case PROTOCOL_CMD_SET_PARAM:
         App_HandleSetParam(command);
         break;
@@ -1391,6 +1442,12 @@ static void App_HandleCommand(const Protocol_Command *command)
         App_ReportStatus(true);
         break;
 
+    case PROTOCOL_CMD_GET_MANUAL_SPEED:
+        Screen_UpdateManualPumpSpeed(app_manual_pump_speed_percent);
+        app_alarm = APP_ALARM_NONE;
+        App_ReportStatus(true);
+        break;
+
     case PROTOCOL_CMD_SAVE_SPRAY_MS:
         App_HandleSaveSprayTimes();
         break;
@@ -1403,8 +1460,12 @@ static void App_HandleCommand(const Protocol_Command *command)
         App_HandleSavePumpSpeed();
         break;
 
+    case PROTOCOL_CMD_SAVE_MANUAL_SPEED:
+        App_HandleSaveManualPumpSpeed();
+        break;
+
     case PROTOCOL_CMD_SAVE_ALL:
-        App_HandleSavePumpSpeed();
+        App_HandleSaveManualPumpSpeed();
         break;
 
     case PROTOCOL_CMD_RESET:
@@ -1695,12 +1756,16 @@ void App_Init(void)
     app_state = APP_STATE_IDLE;
     app_alarm = APP_ALARM_NONE;
     app_aspirate_speed_percent = Pump_ClampSpeedPercent(APP_DEFAULT_PUMP_SPEED_PERCENT);
+    app_manual_pump_speed_percent = Pump_ClampSpeedPercent(APP_DEFAULT_PUMP_SPEED_PERCENT);
     app_aspirate_phase_ms = App_ClampProcessTimeMs(APP_ASPIRATE_PHASE_MS);
     app_trim10_ms = App_ClampProcessTimeMs(APP_TRIM_10ML_MS);
     App_LoadDefaultSprayTimes();
     App_LoadDefaultZVirtTimes();
     app_spray_active_profile = 0U;
-    if (Settings_LoadAll(app_spray_profile_ms, app_zvirt_ms, &app_aspirate_speed_percent)) {
+    if (Settings_LoadAll(app_spray_profile_ms,
+                         app_zvirt_ms,
+                         &app_aspirate_speed_percent,
+                         &app_manual_pump_speed_percent)) {
         Logger_Info("BOOT", "settings_load source=flash");
     } else {
         Logger_Info("BOOT", "settings_load source=default");
@@ -1721,6 +1786,7 @@ void App_Init(void)
 
     App_ReportStatus(true);
     Screen_UpdatePumpSpeed(app_aspirate_speed_percent);
+    Screen_UpdateManualPumpSpeed(app_manual_pump_speed_percent);
     Screen_UpdateSprayTimes(App_SprayMsForProfile(0U), App_SprayProfileVolume(0U));
     Screen_UpdateZVirtTimes(app_zvirt_ms);
 }

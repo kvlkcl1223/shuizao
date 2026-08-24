@@ -128,15 +128,18 @@ prints "#OK;",0
 
 ```text
 #SPD,<percent>;
+#MSPD,<percent>;
 ```
 
 参数：
 
-- `percent`：吸取速度百分比，范围 `10~100`。
+- `percent`：泵速百分比，范围 `10~100`。
 - 小于 10 会按 10 处理，大于 100 会按 100 处理。
-- `#SPD` 先写入 RAM，发送 `#SAVE,SPD;` 或 `#SAVE,ALL;` 后保存到 Flash。
-- MCU 复位后优先读取 Flash 保存速度；Flash 无效时恢复 `APP_DEFAULT_PUMP_SPEED_PERCENT`。
-- 该命令只影响自动吸取和预留 10ml 补吸，不影响自动喷淋。
+- `#SPD` 设置自动吸取速度，先写入 RAM，发送 `#SAVE,SPD;` 或 `#SAVE,ALL;` 后保存到 Flash。
+- `#MSPD` 设置手动泵默认速度，先写入 RAM，发送 `#SAVE,MSPD;` 或 `#SAVE,ALL;` 后保存到 Flash。
+- MCU 复位后优先读取 Flash 保存速度；Flash 无效时两者都恢复 `APP_DEFAULT_PUMP_SPEED_PERCENT`。
+- `#SPD` 只影响自动吸取和预留 10ml 补吸，不影响自动喷淋。
+- `#MSPD` 只影响手动泵默认速度；手动吸取和手动喷淋命令速度写 `0` 时使用该速度。
 - 自动喷淋速度使用代码内置 `APP_SPRAY_SPEED_PERCENT`，需要改喷淋速度时修改固件宏并重新烧录。
 
 示例：
@@ -144,6 +147,7 @@ prints "#OK;",0
 ```text
 #SPD,60;
 #SPD,100;
+#MSPD,50;
 ```
 
 ### 3.2 设置阶段时间
@@ -193,12 +197,14 @@ prints "#OK;",0
 
 ```text
 #GET,SPD;
+#GET,MSPD;
 ```
 
 含义：
 
-- MCU 同时回填 `n_speed.val` 和 `h_speed.val`。
-- 该值是当前自动吸取、预留 10ml 补吸、以及手动泵命令速度为 `0` 时使用的泵速。
+- `#GET,SPD;` 读取自动吸取速度，MCU 回填 `n_speed.val` 和 `h_speed.val`。
+- `#GET,MSPD;` 读取手动泵默认速度，MCU 回填 `n_mspd.val` 和 `h_mspd.val`。
+- 手动泵命令 `#MAN,PUMP,IN,0;` 和 `#MAN,PUMP,OUT,0;` 使用手动泵默认速度。
 
 ### 3.4 读取指定喷淋档位
 
@@ -297,6 +303,7 @@ prints "#OK;",0
 #GET,SPRAY_MS,<volume>;
 #GET,ZVIRT_MS;
 #GET,SPD;
+#GET,MSPD;
 ```
 
 当前实现中，查询命令会触发 MCU 立即刷新屏幕控件。
@@ -305,7 +312,8 @@ prints "#OK;",0
 - `#GET,STATE;`：刷新状态、报警、速度、阶段和进度。
 - `#GET,SPRAY_MS,<volume>;`：刷新指定体积档位、6 个喷淋时间滑轴和 6 个喷淋时间数值控件。
 - `#GET,ZVIRT_MS;`：刷新 4 个 Z 轴虚拟位置时间滑轴和数值控件。
-- `#GET,SPD;` 或 `#GET,SPEED;`：刷新当前吸取泵速 `n_speed.val` 和 `h_speed.val`。
+- `#GET,SPD;` 或 `#GET,SPEED;`：刷新自动吸取泵速 `n_speed.val` 和 `h_speed.val`。
+- `#GET,MSPD;` 或 `#GET,MANUAL_SPEED;`：刷新手动泵默认速度 `n_mspd.val` 和 `h_mspd.val`。
 
 ## 7. 保存命令
 
@@ -313,13 +321,14 @@ prints "#OK;",0
 #SAVE,SPRAY_MS;
 #SAVE,ZVIRT_MS;
 #SAVE,SPD;
+#SAVE,MSPD;
 #SAVE,ALL;
 ```
 
 含义：
 
-- `#SAVE,SPRAY_MS;`、`#SAVE,ZVIRT_MS;`、`#SAVE,SPD;`、`#SAVE,ALL;` 当前都会整包保存全部可保存参数。
-- 保存内容包括 4 个体积档位共 24 个第一段喷淋时间、4 个 Z 轴虚拟位置时间，以及当前吸取泵速。
+- `#SAVE,SPRAY_MS;`、`#SAVE,ZVIRT_MS;`、`#SAVE,SPD;`、`#SAVE,MSPD;`、`#SAVE,ALL;` 当前都会整包保存全部可保存参数。
+- 保存内容包括 4 个体积档位共 24 个第一段喷淋时间、4 个 Z 轴虚拟位置时间、自动吸取速度、手动泵默认速度。
 - 这样做是为了避免 Flash 中喷淋参数和 Z 虚拟位置参数互相覆盖。
 - MCU 初始化时优先从 Flash 读取；Flash 记录无效时使用 `app_config.h` 默认值。
 - 自动流程运行中发送保存命令会被拒绝并显示 `BUSY`。
@@ -342,6 +351,8 @@ FF FF FF
 | `APP_SCREEN_PHASE_OBJ` | `n_phase` | 当前阶段，空闲时为 0 |
 | `APP_SCREEN_SPEED_OBJ` | `n_speed` | 当前吸取速度百分比 |
 | `APP_SCREEN_SPEED_SLIDER_OBJ` | `h_speed` | 当前吸取速度滑轴 |
+| `APP_SCREEN_MANUAL_SPEED_OBJ` | `n_mspd` | 当前手动泵速度百分比 |
+| `APP_SCREEN_MANUAL_SPEED_SLIDER_OBJ` | `h_mspd` | 当前手动泵速度滑轴 |
 | `APP_SCREEN_PGMASK_OBJ` | `n_pgmask` | 16 路 PG 有效位掩码 |
 | `APP_SCREEN_KEEP10_OBJ` | `n_keep10` | 是否预留 10ml |
 | `APP_SCREEN_ALARM_OBJ` | `n_alarm` | 报警码 |
@@ -539,9 +550,9 @@ prints t_tmp.txt,0
 prints ";",0
 ```
 
-### 13.2 吸取速度设置页面
+### 13.2 泵速设置页面
 
-建议使用滑轴 `h_speed` 和数值控件 `n_speed`，范围都限制为 `10~100`。滑轴弹起事件先同步数值控件，再在屏幕内拼完整字符串，最后一次性发送：
+自动吸取速度使用滑轴 `h_speed` 和数值控件 `n_speed`，范围都限制为 `10~100`。滑轴弹起事件先同步数值控件，再在屏幕内拼完整字符串，最后一次性发送：
 
 ```text
 n_speed.val=h_speed.val
@@ -552,16 +563,39 @@ t_cmd.txt+=";"
 prints t_cmd.txt,0
 ```
 
-读取按钮按下或页面打开事件：
+读取自动吸取速度：
 
 ```text
 prints "#GET,SPD;",0
 ```
 
-保存按钮按下或弹起事件：
+保存自动吸取速度：
 
 ```text
 prints "#SAVE,SPD;",0
+```
+
+手动泵速度使用滑轴 `h_mspd` 和数值控件 `n_mspd`，范围都限制为 `10~100`。滑轴弹起事件：
+
+```text
+n_mspd.val=h_mspd.val
+cov h_mspd.val,t_tmp.txt,0
+t_cmd.txt="#MSPD,"
+t_cmd.txt+=t_tmp.txt
+t_cmd.txt+=";"
+prints t_cmd.txt,0
+```
+
+读取手动泵速度：
+
+```text
+prints "#GET,MSPD;",0
+```
+
+保存手动泵速度：
+
+```text
+prints "#SAVE,MSPD;",0
 ```
 
 ### 13.3 时间设置页面

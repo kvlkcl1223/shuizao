@@ -27,7 +27,7 @@
 - 第 2 到第 7 路 DRV8870 控制 6 路蠕动泵。
 - 第 8 路 DRV8870 备用。
 - 6 路蠕动泵当前作为一个泵组，同时同速同向动作。
-- 吸取泵速可通过屏幕设置，范围为 10% 到 100%；喷淋泵速使用代码内置值。
+- 自动吸取泵速和手动泵速可分别通过屏幕设置，范围为 10% 到 100%；自动喷淋泵速使用代码内置值。
 - 第一段喷淋补偿时间可以保存到 Flash；第二段和第三段喷淋时间在程序内固定配置，其他运行参数 MCU 复位或断电后恢复默认值。
 - 上电后默认自动复位到最高点，当前最高点为 PG3；屏幕发送 `#RESET;` 软件复位后也会执行同样的上电复位。
 - v3 当前不做校准流程，定时步进参数需要真机实测后写入 `My/app_config.c`。
@@ -179,13 +179,21 @@ Z 轴所有可能从上行切到下行、或从下行切到上行的动作，都
 
 `#SET,ASP_MS,<time_ms>;` 仍保留给旧协议兼容，但新的分阶段吸取默认不再用它决定各档位停留时间。
 
-每个吸取阶段使用同一个吸取泵速：
+每个吸取阶段使用同一个自动吸取泵速：
 
 - 默认宏：`APP_DEFAULT_PUMP_SPEED_PERCENT`
 - 运行时屏幕命令：`#SPD,<percent>;`
 - 保存命令：`#SAVE,SPD;` 或 `#SAVE,ALL;`
 - 读取命令：`#GET,SPD;`
 - `#SPD` 只影响吸取和预留 10ml 补吸，不影响喷淋。
+
+手动泵使用独立的手动泵速：
+
+- 运行时屏幕命令：`#MSPD,<percent>;`
+- 保存命令：`#SAVE,MSPD;` 或 `#SAVE,ALL;`
+- 读取命令：`#GET,MSPD;`
+- 手动泵命令速度写 `0` 时使用手动泵速，例如 `#MAN,PUMP,IN,0;` 和 `#MAN,PUMP,OUT,0;`
+- 手动吸取和手动喷淋都会受到手动泵速影响。
 
 ### 3.4 预留 10ml 的当前逻辑
 
@@ -382,6 +390,8 @@ MCU 默认写这些控件名，定义在 `My/app_config.h`：
 | `n_phase` | 数值 | 当前阶段号 |
 | `n_speed` | 数值 | 当前吸取泵速百分比 |
 | `h_speed` | 滑轴 | 当前吸取泵速百分比 |
+| `n_mspd` | 数值 | 当前手动泵速百分比 |
+| `h_mspd` | 滑轴 | 当前手动泵速百分比 |
 | `n_pgmask` | 数值 | PG 有效掩码 |
 | `n_keep10` | 数值 | 是否预留 10ml |
 | `n_alarm` | 数值 | 报警码 |
@@ -678,8 +688,8 @@ const uint8_t APP_PUMP_OUT_DIRECTION = MOTOR_REVERSE;
 
 说明：
 
-- 屏幕上的 `#SPD` 先修改 RAM，`#SAVE,SPD;` 或 `#SAVE,ALL;` 后保存到 Flash；`#SET,ASP_MS` 和 `#SET,TRIM10_MS` 只在本次上电运行内生效，不保存。
-- `#SPD` 只改变自动吸取速度；自动喷淋速度固定使用 `APP_SPRAY_SPEED_PERCENT`。
+- 屏幕上的 `#SPD` 和 `#MSPD` 先修改 RAM，`#SAVE,SPD;`、`#SAVE,MSPD;` 或 `#SAVE,ALL;` 后保存到 Flash；`#SET,ASP_MS` 和 `#SET,TRIM10_MS` 只在本次上电运行内生效，不保存。
+- `#SPD` 只改变自动吸取速度；`#MSPD` 只改变手动泵速度；自动喷淋速度固定使用 `APP_SPRAY_SPEED_PERCENT`。
 - 屏幕上的 `#SET,SPRAY1_MS,<time_ms>,<volume>` 到 `#SET,SPRAY6_MS,<time_ms>,<volume>` 会先修改指定体积档位的第一段 RAM，`#SAVE,SPRAY_MS;` 才会把 4 个档位共 24 个第一段喷淋补偿时间保存到 Flash。
 - 第二段 300ml 和第三段 800ml 的喷淋补偿时间不受屏幕滑轴影响，在 `My/app_config.c` 的 `APP_SPRAY_STAGE2_PUMP_MS`、`APP_SPRAY_STAGE3_PUMP_MS` 中按体积档位和泵编号分别修改。
 - 屏幕上的 `#SET,Z_DN_HOME_800_MS,<time_ms>`、`#SET,Z_DN_800_300_MS,<time_ms>`、`#SET,Z_UP_300_800_MS,<time_ms>`、`#SET,Z_UP_200_300_MS,<time_ms>` 会先修改 RAM，`#SAVE,ZVIRT_MS;` 或 `#SAVE,ALL;` 写入 Flash。
@@ -761,6 +771,8 @@ const uint8_t APP_PUMP_OUT_DIRECTION = MOTOR_REVERSE;
 #define APP_SCREEN_PHASE_OBJ            "n_phase"
 #define APP_SCREEN_SPEED_OBJ            "n_speed"
 #define APP_SCREEN_SPEED_SLIDER_OBJ     "h_speed"
+#define APP_SCREEN_MANUAL_SPEED_OBJ     "n_mspd"
+#define APP_SCREEN_MANUAL_SPEED_SLIDER_OBJ "h_mspd"
 #define APP_SCREEN_PGMASK_OBJ           "n_pgmask"
 #define APP_SCREEN_KEEP10_OBJ           "n_keep10"
 #define APP_SCREEN_ALARM_OBJ            "n_alarm"
@@ -820,6 +832,7 @@ const uint8_t APP_PUMP_OUT_DIRECTION = MOTOR_REVERSE;
 
 - `#START,<volume>,<keep10>;`
 - `#SPD,<percent>;`
+- `#MSPD,<percent>;`
 - `#SET,<param>,<time_ms>;`
 - `#STOP;`
 - `#ESTOP;`
@@ -831,9 +844,11 @@ const uint8_t APP_PUMP_OUT_DIRECTION = MOTOR_REVERSE;
 - `#GET,SPRAY_MS,<volume>;`
 - `#GET,ZVIRT_MS;`
 - `#GET,SPD;`
+- `#GET,MSPD;`
 - `#SAVE,SPRAY_MS;`
 - `#SAVE,ZVIRT_MS;`
 - `#SAVE,SPD;`
+- `#SAVE,MSPD;`
 - `#SAVE,ALL;`
 - `#RESET;`
 
@@ -953,7 +968,7 @@ return PG_ReadRaw(id) == GPIO_PIN_RESET;
 - 同一个自动体积档位内部，第一段使用屏幕/Flash 可调的 6 泵补偿时间；第二段和第三段使用程序固定的 6 泵补偿时间。
 - 真实 PG 段的定位吸取已由 `APP_ASPIRATE_STAGES` 控制，`precise_aspirate` 字段保留但当前不作为主流程判断依据。
 - `keep10` 不保存，每次 START 时由屏幕传入。
-- 运行时设置的吸取速度可通过 `#SAVE,SPD;` 或 `#SAVE,ALL;` 保存；旧版 `ASP_MS` 不保存。
+- 运行时设置的自动吸取速度可通过 `#SAVE,SPD;` 或 `#SAVE,ALL;` 保存；手动泵速度可通过 `#SAVE,MSPD;` 或 `#SAVE,ALL;` 保存；旧版 `ASP_MS` 不保存。
 - 当前没有自动校准流程。
 
 如果后续要扩展：
@@ -995,7 +1010,7 @@ arm-none-eabi-gcc -mcpu=cortex-m3 -mthumb -std=c99 -Wall -Wextra -finput-charset
 - 虚拟体积位置不准优先改 `APP_Z_STEP_DOWN_MS` 和 `APP_Z_STEP_UP_MS`。
 - 第一次喷淋逻辑位置不符合工艺时再改 `APP_VOLUME_POSITIONS`。
 - 第二、第三次喷淋固定位置错了改 `APP_SPRAY_FIXED_STAGE2_POS` 和 `APP_SPRAY_FIXED_STAGE3_POS`。
-- `#SET,ASP_MS` 和 `#SET,TRIM10_MS` 不保存，复位后会恢复默认值；`#SPD` 可通过 `#SAVE,SPD;` 或 `#SAVE,ALL;` 保存到 Flash。
-- `#SPD` 不影响喷淋；喷淋速度需要修改 `APP_SPRAY_SPEED_PERCENT` 后重新烧录。
+- `#SET,ASP_MS` 和 `#SET,TRIM10_MS` 不保存，复位后会恢复默认值；`#SPD` 和 `#MSPD` 可通过保存命令写入 Flash。
+- `#SPD` 和 `#MSPD` 都不影响自动喷淋；自动喷淋速度需要修改 `APP_SPRAY_SPEED_PERCENT` 后重新烧录。
 - `#SET,SPRAY1_MS,<time_ms>,<volume>` 到 `#SET,SPRAY6_MS,<time_ms>,<volume>` 只改指定体积档位的第一段 RAM；`#SAVE,SPRAY_MS;` 会保存 4 个档位共 24 个第一段喷淋补偿时间到 Flash。
 - 当前没有 10ml 光电位逻辑，预留 10ml 是自动流程结束后的人工补加逻辑。
