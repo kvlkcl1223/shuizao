@@ -60,6 +60,7 @@ static uint8_t app_phase_index = 0U;
 static App_ZPosition app_current_pos = APP_Z_POS_INVALID;
 static App_ZPosition app_target_pos = APP_Z_POS_INVALID;
 static App_ZPosition app_step_target_pos = APP_Z_POS_INVALID;
+static uint8_t app_step_direction = MOTOR_STOP;
 static uint32_t app_step_start_tick = 0U;
 static uint32_t app_step_duration_ms = 0U;
 static uint32_t app_state_start_tick = 0U;
@@ -95,6 +96,7 @@ static uint32_t Now(void)
 }
 
 static void App_Fail(App_Alarm alarm);
+static void App_EnterAspirateMove(uint8_t phase_index);
 
 static uint32_t Elapsed(uint32_t start_tick)
 {
@@ -155,6 +157,11 @@ static PG_ID App_ZPosSensorPG(App_ZPosition pos)
 static bool App_ZPosHasSensor(App_ZPosition pos)
 {
     return PG_IsValid(App_ZPosSensorPG(pos));
+}
+
+static bool App_ZPosIsVirtual(App_ZPosition pos)
+{
+    return App_ZPosIsValid(pos) && !App_ZPosHasSensor(pos);
 }
 
 static bool App_ZPosSensorActive(App_ZPosition pos)
@@ -227,6 +234,25 @@ static uint32_t App_ClampZVirtTimeMs(uint32_t time_ms)
         return APP_ZVIRT_TIME_MAX_MS;
     }
     return time_ms;
+}
+
+static bool App_ZMoveDirectionBetween(App_ZPosition from, App_ZPosition to, uint8_t *direction)
+{
+    if (!App_ZPosIsValid(from) || !App_ZPosIsValid(to) || direction == 0) {
+        return false;
+    }
+
+    if ((uint8_t)to > (uint8_t)from) {
+        *direction = APP_Z_DOWN_DIRECTION;
+        return true;
+    }
+
+    if ((uint8_t)to < (uint8_t)from) {
+        *direction = APP_Z_UP_DIRECTION;
+        return true;
+    }
+
+    return false;
 }
 
 static void App_LoadDefaultSprayTimes(void)
@@ -606,6 +632,7 @@ static void App_AllStop(void)
     App_ZBrake();
     app_spray_active_pump_mask = 0U;
     app_step_target_pos = APP_Z_POS_INVALID;
+    app_step_direction = MOTOR_STOP;
     app_step_start_tick = 0U;
     app_step_duration_ms = 0U;
     app_power_reset_phase = APP_POWER_RESET_PHASE_NONE;
@@ -637,8 +664,52 @@ static void App_CompleteZStep(void)
     App_ZBrake();
     app_current_pos = app_step_target_pos;
     app_step_target_pos = APP_Z_POS_INVALID;
+    app_step_direction = MOTOR_STOP;
     app_step_start_tick = 0U;
     app_step_duration_ms = 0U;
+}
+
+static bool App_TryPassThroughAspirateVirtualTarget(void)
+{
+    App_ZPosition reached_pos;
+    App_ZPosition next_pos;
+    uint8_t next_direction;
+
+    if (app_state != APP_STATE_MOVE_TO_ASPIRATE) {
+        return false;
+    }
+
+    if (app_phase_index >= app_aspirate_phase_count ||
+        (uint8_t)(app_phase_index + 1U) >= app_aspirate_phase_count) {
+        return false;
+    }
+
+    if (app_step_target_pos != app_target_pos ||
+        app_step_target_pos != app_aspirate_sequence[app_phase_index]) {
+        return false;
+    }
+
+    if (app_aspirate_dwell_sequence[app_phase_index] != 0U ||
+        !App_ZPosIsVirtual(app_step_target_pos)) {
+        return false;
+    }
+
+    reached_pos = app_step_target_pos;
+    next_pos = app_aspirate_sequence[app_phase_index + 1U];
+    if (!App_ZMoveDirectionBetween(reached_pos, next_pos, &next_direction) ||
+        next_direction != app_step_direction) {
+        return false;
+    }
+
+    app_current_pos = reached_pos;
+    app_step_target_pos = APP_Z_POS_INVALID;
+    app_step_start_tick = 0U;
+    app_step_duration_ms = 0U;
+
+    Logger_Info("ASP", "pass_zero_virtual");
+    app_phase_index++;
+    App_EnterAspirateMove(app_phase_index);
+    return true;
 }
 
 static void App_StartNextZStep(void)
@@ -650,12 +721,14 @@ static void App_StartNextZStep(void)
 
     if (!App_ZPosIsValid(app_target_pos)) {
         App_ZBrake();
+        app_step_direction = MOTOR_STOP;
         return;
     }
 
     if (App_ZPosSensorActive(app_target_pos)) {
         app_current_pos = app_target_pos;
         app_step_target_pos = APP_Z_POS_INVALID;
+        app_step_direction = MOTOR_STOP;
         App_ZBrake();
         return;
     }
@@ -671,6 +744,7 @@ static void App_StartNextZStep(void)
         app_step_duration_ms = APP_HOME_TIMEOUT_MS;
     } else if (app_current_pos == app_target_pos) {
         app_step_target_pos = APP_Z_POS_INVALID;
+        app_step_direction = MOTOR_STOP;
         App_ZBrake();
         return;
     } else if ((uint8_t)app_target_pos > (uint8_t)app_current_pos) {
@@ -686,6 +760,7 @@ static void App_StartNextZStep(void)
     }
 
     app_step_target_pos = to;
+    app_step_direction = direction;
     app_step_start_tick = 0U;
     speed = App_ZSpeed();
 
@@ -805,6 +880,10 @@ static bool App_TargetReached(void)
     }
 
     if (Elapsed(app_step_start_tick) >= app_step_duration_ms) {
+        if (App_TryPassThroughAspirateVirtualTarget()) {
+            return false;
+        }
+
         App_CompleteZStep();
         if (app_current_pos == app_target_pos) {
             return true;
