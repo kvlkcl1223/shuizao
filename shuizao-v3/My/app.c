@@ -225,6 +225,29 @@ static uint32_t App_ClampProcessTimeMs(uint32_t time_ms)
     return time_ms;
 }
 
+static uint32_t App_ScaleAspirateDwellMs(uint32_t full_speed_ms)
+{
+    uint32_t speed_percent = Pump_ClampSpeedPercent(app_aspirate_speed_percent);
+    uint64_t scaled_ms;
+
+    if (full_speed_ms == 0U) {
+        return 0U;
+    }
+
+    /*
+     * APP_ASP_DWELL_xxx_MS 按 100% 满速标定。
+     * 低速时用近似线性关系补偿：时间 = 满速时间 * 100 / 当前速度百分比。
+     */
+    scaled_ms = ((uint64_t)full_speed_ms * 100ULL + (uint64_t)speed_percent - 1ULL) /
+                (uint64_t)speed_percent;
+
+    if (scaled_ms > 0xFFFFFFFFULL) {
+        return 0xFFFFFFFFU;
+    }
+
+    return (uint32_t)scaled_ms;
+}
+
 static uint32_t App_ClampZVirtTimeMs(uint32_t time_ms)
 {
     if (time_ms < APP_ZVIRT_TIME_MIN_MS) {
@@ -508,7 +531,8 @@ static bool App_BuildAutoPlan(uint16_t volume_ml, uint8_t keep10)
         }
 
         app_aspirate_sequence[app_aspirate_phase_count] = stage->pos;
-        app_aspirate_dwell_sequence[app_aspirate_phase_count] = App_ClampProcessTimeMs(stage->dwell_ms);
+        app_aspirate_dwell_sequence[app_aspirate_phase_count] =
+            App_ClampProcessTimeMs(App_ScaleAspirateDwellMs(stage->dwell_ms));
         app_aspirate_move_pump_sequence[app_aspirate_phase_count] = stage->pump_during_move ? 1U : 0U;
         app_aspirate_dwell_pump_sequence[app_aspirate_phase_count] = stage->pump_during_dwell ? 1U : 0U;
         app_aspirate_phase_count++;
