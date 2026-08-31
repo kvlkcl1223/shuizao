@@ -76,6 +76,14 @@ void Screen_ShowWarningPage(void)
     Screen_Command(buffer);
 }
 
+void Screen_ShowLeakWarningPage(void)
+{
+    char buffer[48];
+
+    sprintf(buffer, "page %s", APP_SCREEN_LEAK_WARNING_PAGE);
+    Screen_Command(buffer);
+}
+
 void Screen_UpdateSprayTimes(const uint32_t *spray_ms, uint16_t volume_ml)
 {
     char volume_text[16];

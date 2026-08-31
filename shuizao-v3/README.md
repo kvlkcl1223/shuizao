@@ -21,7 +21,7 @@
 - Z 轴使用 5 个真实传感器：PG3 上限/原点，PG4 200ml，PG5 150ml，PG6 100ml，PG7 50ml/下限/底部。
 - 自动模式只支持 `200/150/100/50ml`。
 - 300ml 和 800ml 只作为第二、第三次喷淋的虚拟位置，靠相邻位置定时步进到达；关键虚拟位置时间可通过 HMI 调节并保存到 Flash。
-- PG8 到 PG16 当前不参与 Z 轴定位。
+- PG8 当前用于漏水检测，不参与 Z 轴定位；PG9 到 PG16 当前备用。
 - 所有 PG 低电平有效。
 - 第 1 路 DRV8870 控制 Z 轴。
 - 第 2 到第 7 路 DRV8870 控制 6 路蠕动泵。
@@ -1000,7 +1000,43 @@ arm-none-eabi-gcc -mcpu=cortex-m3 -mthumb -std=c99 -Wall -Wextra -finput-charset
 - `motor.c`
 - `logger.c`
 
-## 12. 最容易踩错的点
+## 12. 漏水检测
+
+当前漏水检测使用 `PG8`，配置位置在 `My/app_config.c`：
+
+```c
+const PG_ID APP_LEAK_PG = PG_8;
+```
+
+漏水输入的电平定义和普通位置 PG 的“触发”语义不同：
+
+- `PG8` 低电平：正常
+- `PG8` 高电平：漏水异常
+
+因此漏水检测代码读取的是 `PG_ReadRaw(APP_LEAK_PG)` 原始电平，而不是把 `PG_IsActive(APP_LEAK_PG)` 当成异常判断。
+
+相关宏在 `My/app_config.h`：
+
+```c
+#define APP_LEAK_DETECT_ENABLE 1U
+#define APP_LEAK_DETECT_TEST_ONLY 1U
+#define APP_LEAK_CHECK_INTERVAL_MS 200U
+#define APP_LEAK_TEST_LOG_INTERVAL_MS 1000U
+#define APP_LEAK_DEBOUNCE_COUNT 3U
+#define APP_SCREEN_LEAK_WARNING_PAGE "leak_warn"
+```
+
+测试模式下，`APP_LEAK_DETECT_TEST_ONLY` 为 `1U`，MCU 只通过 USART2 输出漏水状态日志，不停止电机和泵，也不跳转屏幕报警页面。正式模式下，把该宏改为 `0U`；MCU 会定时检测 PG8，连续异常达到防抖次数后触发 `APP_ALARM_LEAK_DETECTED`，报警码为 `8`，立即停止全部动作，并跳转到 `leak_warn` 页面。
+
+HMI 需要新增页面：
+
+```text
+leak_warn
+```
+
+这个页面建议放固定中文提示，例如“检测到漏水，请关闭设备并检查管路”。如果页面名不同，需要同步修改 `APP_SCREEN_LEAK_WARNING_PAGE`。
+
+## 13. 最容易踩错的点
 
 - 陶晶驰控件名必须和 `My/app_config.h` 一致。
 - 上电后会自动回最高点 PG3，调试时要先保证 Z 轴上升方向和 PG3 限位可靠。

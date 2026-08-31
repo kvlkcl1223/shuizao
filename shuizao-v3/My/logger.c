@@ -108,6 +108,8 @@ static const char *Logger_AlarmName(uint16_t alarm)
         return "BAD_CONFIG";
     case APP_ALARM_SAVE_FAILED:
         return "SAVE_FAILED";
+    case APP_ALARM_LEAK_DETECTED:
+        return "LEAK_DETECTED";
     default:
         return "UNKNOWN";
     }

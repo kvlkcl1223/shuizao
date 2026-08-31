@@ -36,6 +36,9 @@ const PG_ID APP_Z_100ML_PG = PG_6;
 const PG_ID APP_Z_50ML_PG = PG_7;
 const PG_ID APP_Z_BOTTOM_PG = PG_7;
 
+/* 漏水检测输入。低电平为正常，高电平为异常；不要放入 APP_Z_ORDER。 */
+const PG_ID APP_LEAK_PG = PG_8;
+
 /* Z 轴真实传感器从上到下的光电顺序。800ml 和 300ml 是定时虚拟位置，不在这里出现。 */
 const PG_ID APP_Z_ORDER[] = {
     PG_3,

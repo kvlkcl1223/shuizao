@@ -65,6 +65,11 @@ static uint32_t app_step_start_tick = 0U;
 static uint32_t app_step_duration_ms = 0U;
 static uint32_t app_state_start_tick = 0U;
 static uint32_t app_last_screen_tick = 0U;
+static uint32_t app_last_leak_check_tick = 0U;
+static uint32_t app_last_leak_log_tick = 0U;
+static uint8_t app_leak_abnormal_count = 0U;
+static bool app_leak_last_normal = true;
+static bool app_leak_fault_latched = false;
 
 /* 上电复位分为“先下行”和“再上找 PG3”两个子阶段。 */
 static App_PowerResetPhase app_power_reset_phase = APP_POWER_RESET_PHASE_NONE;
@@ -97,6 +102,7 @@ static uint32_t Now(void)
 
 static void App_Fail(App_Alarm alarm);
 static void App_EnterAspirateMove(uint8_t phase_index);
+static void App_TaskLeakDetect(void);
 
 static uint32_t Elapsed(uint32_t start_tick)
 {
@@ -1007,6 +1013,108 @@ static void App_Fail(App_Alarm alarm)
     App_SetState(APP_STATE_ERROR);
 }
 
+static bool App_LeakIsNormal(void)
+{
+#if APP_LEAK_DETECT_ENABLE
+    if (!PG_IsValid(APP_LEAK_PG)) {
+        return true;
+    }
+
+    /* 漏水检测与普通 PG 触发语义相反：低电平为正常，高电平为异常。 */
+    return PG_ReadRaw(APP_LEAK_PG) == GPIO_PIN_RESET;
+#else
+    return true;
+#endif
+}
+
+static void App_LogLeakStatus(bool normal, const char *mode_text)
+{
+    if (normal) {
+        if (mode_text == 0) {
+            Logger_Info("LEAK", "state=normal raw=LOW");
+        } else if (mode_text[0] == 't') {
+            Logger_Info("LEAK", "mode=test state=normal raw=LOW");
+        } else {
+            Logger_Info("LEAK", "mode=formal state=normal raw=LOW");
+        }
+    } else {
+        if (mode_text == 0) {
+            Logger_Info("LEAK", "state=abnormal raw=HIGH");
+        } else if (mode_text[0] == 't') {
+            Logger_Info("LEAK", "mode=test state=abnormal raw=HIGH");
+        } else {
+            Logger_Info("LEAK", "mode=formal state=abnormal raw=HIGH");
+        }
+    }
+}
+
+static void App_TriggerLeakAlarm(void)
+{
+    if (app_leak_fault_latched) {
+        return;
+    }
+
+    app_leak_fault_latched = true;
+    Logger_Info("LEAK", "fault=detected action=all_stop page=leak_warn");
+
+    if (app_state == APP_STATE_ESTOP) {
+        app_alarm = APP_ALARM_LEAK_DETECTED;
+        App_AllStop();
+        Logger_Alarm((uint16_t)APP_ALARM_LEAK_DETECTED);
+        Screen_ShowAlarm((uint16_t)APP_ALARM_LEAK_DETECTED);
+    } else {
+        App_Fail(APP_ALARM_LEAK_DETECTED);
+    }
+
+    Screen_ShowMessage("LEAK");
+    Screen_ShowLeakWarningPage();
+}
+
+static void App_TaskLeakDetect(void)
+{
+#if APP_LEAK_DETECT_ENABLE
+    bool normal;
+
+    if (Elapsed(app_last_leak_check_tick) < APP_LEAK_CHECK_INTERVAL_MS) {
+        return;
+    }
+    app_last_leak_check_tick = Now();
+
+    normal = App_LeakIsNormal();
+
+#if APP_LEAK_DETECT_TEST_ONLY
+    if (app_leak_last_normal != normal ||
+        Elapsed(app_last_leak_log_tick) >= APP_LEAK_TEST_LOG_INTERVAL_MS) {
+        App_LogLeakStatus(normal, "test");
+        app_last_leak_log_tick = Now();
+    }
+    app_leak_last_normal = normal;
+#else
+    if (normal) {
+        if (!app_leak_last_normal) {
+            App_LogLeakStatus(true, "formal");
+        }
+        app_leak_abnormal_count = 0U;
+        app_leak_last_normal = true;
+        return;
+    }
+
+    if (app_leak_abnormal_count < APP_LEAK_DEBOUNCE_COUNT) {
+        app_leak_abnormal_count++;
+    }
+
+    if (app_leak_last_normal || app_leak_abnormal_count == 1U) {
+        App_LogLeakStatus(false, "formal");
+    }
+    app_leak_last_normal = false;
+
+    if (app_leak_abnormal_count >= APP_LEAK_DEBOUNCE_COUNT) {
+        App_TriggerLeakAlarm();
+    }
+#endif
+#endif
+}
+
 static uint8_t App_DisplayPhase(void)
 {
     if (app_state == APP_STATE_MOVE_TO_ASPIRATE ||
@@ -1850,6 +1958,15 @@ void App_Init(void)
     Screen_Init();
     Logger_Init();
 
+#if APP_LEAK_DETECT_ENABLE
+    Logger_Value("LEAK", "pg", PG_ToNumber(APP_LEAK_PG));
+#if APP_LEAK_DETECT_TEST_ONLY
+    Logger_Info("LEAK", "mode=test low=normal action=log_only");
+#else
+    Logger_Info("LEAK", "mode=formal low=normal action=all_stop");
+#endif
+#endif
+
     if (HAL_TIM_Base_Start_IT(&htim5) == HAL_OK) {
         Logger_Info("BOOT", "tim5_heartbeat_start result=ok");
     } else {
@@ -1862,6 +1979,11 @@ void App_Init(void)
     app_manual_pump_speed_percent = Pump_ClampSpeedPercent(APP_DEFAULT_PUMP_SPEED_PERCENT);
     app_aspirate_phase_ms = App_ClampProcessTimeMs(APP_ASPIRATE_PHASE_MS);
     app_trim10_ms = App_ClampProcessTimeMs(APP_TRIM_10ML_MS);
+    app_last_leak_check_tick = 0U;
+    app_last_leak_log_tick = 0U;
+    app_leak_abnormal_count = 0U;
+    app_leak_last_normal = true;
+    app_leak_fault_latched = false;
     App_LoadDefaultSprayTimes();
     App_LoadDefaultZVirtTimes();
     app_spray_active_profile = 0U;
@@ -1899,6 +2021,7 @@ void App_Task(void)
     /* 主循环任务入口，保持非阻塞，确保串口命令和安全状态能及时响应。 */
     Protocol_Process();
     App_ProcessCommands();
+    App_TaskLeakDetect();
 
     if (app_state == APP_STATE_MANUAL) {
         App_TaskManual();

@@ -34,6 +34,9 @@ void Screen_ShowAlarm(uint16_t alarm_code);
 /* 跳转到警告页面。页面名由 APP_SCREEN_WARNING_PAGE 配置。 */
 void Screen_ShowWarningPage(void);
 
+/* 跳转到漏水报警页面。页面名由 APP_SCREEN_LEAK_WARNING_PAGE 配置。 */
+void Screen_ShowLeakWarningPage(void);
+
 /* 同步当前体积档位和该档位 6 个喷淋补偿时间到 HMI。 */
 void Screen_UpdateSprayTimes(const uint32_t *spray_ms, uint16_t volume_ml);
 

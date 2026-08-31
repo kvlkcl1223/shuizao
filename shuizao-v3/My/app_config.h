@@ -105,6 +105,16 @@ extern "C"
 /* MCU 定期向串口屏刷新状态的周期。 */
 #define APP_SCREEN_UPDATE_MS 500U
 
+/* 漏水检测配置。PG8 默认低电平为正常，高电平为异常。
+ * APP_LEAK_DETECT_TEST_ONLY 为 1 时只输出 USART2 日志，不停机、不跳报警页；
+ * 真机正式运行前改为 0，异常会关闭全部动作并跳转漏水报警页。
+ */
+#define APP_LEAK_DETECT_ENABLE 1U
+#define APP_LEAK_DETECT_TEST_ONLY 1U
+#define APP_LEAK_CHECK_INTERVAL_MS 200U
+#define APP_LEAK_TEST_LOG_INTERVAL_MS 1000U
+#define APP_LEAK_DEBOUNCE_COUNT 3U
+
 /* USART2 调试日志配置。USART3 仍专用于陶晶驰串口屏。 */
 #define APP_LOG_ENABLE 1U
 #define APP_LOG_UART_TIMEOUT_MS 50U
@@ -130,6 +140,9 @@ extern "C"
 
 /* Y 轴位置异常时跳转的警告页面名称。HMI 页面名变更时只改这里。 */
 #define APP_SCREEN_WARNING_PAGE "warn"
+
+/* 漏水异常时跳转的报警页面名。HMI 新增页面建议直接命名为 leak_warn。 */
+#define APP_SCREEN_LEAK_WARNING_PAGE "leak_warn"
 
 /* 喷淋补偿时间调试控件。滑轴和数值控件都由 MCU 回填，便于页面打开时同步当前值。 */
 #define APP_SCREEN_SPRAY1_SLIDER_OBJ "h_spray1_ms"
@@ -200,6 +213,7 @@ extern "C"
     extern const PG_ID APP_Z_100ML_PG;
     extern const PG_ID APP_Z_50ML_PG;
     extern const PG_ID APP_Z_BOTTOM_PG;
+    extern const PG_ID APP_LEAK_PG;
 
     /* Z 轴真实传感器从上到下的物理顺序表，用于传感器调试。 */
     extern const PG_ID APP_Z_ORDER[];
