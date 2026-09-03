@@ -105,12 +105,12 @@ extern "C"
 /* MCU 定期向串口屏刷新状态的周期。 */
 #define APP_SCREEN_UPDATE_MS 500U
 
-/* 漏水检测配置。PG8 默认低电平为正常，高电平为异常。
+/* 漏水检测配置。PG8 默认高电平为正常，低电平为异常。
  * APP_LEAK_DETECT_TEST_ONLY 为 1 时只输出 USART2 日志，不停机、不跳报警页；
  * 真机正式运行前改为 0，异常会关闭全部动作并跳转漏水报警页。
  */
 #define APP_LEAK_DETECT_ENABLE 1U
-#define APP_LEAK_DETECT_TEST_ONLY 1U
+#define APP_LEAK_DETECT_TEST_ONLY 0U
 #define APP_LEAK_CHECK_INTERVAL_MS 200U
 #define APP_LEAK_TEST_LOG_INTERVAL_MS 1000U
 #define APP_LEAK_DEBOUNCE_COUNT 3U

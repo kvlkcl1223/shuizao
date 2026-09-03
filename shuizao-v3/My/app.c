@@ -21,8 +21,15 @@
 typedef enum {
     APP_POWER_RESET_PHASE_NONE = 0,
     APP_POWER_RESET_PHASE_DOWN,
-    APP_POWER_RESET_PHASE_UP
+    APP_POWER_RESET_PHASE_UP,
+    APP_POWER_RESET_PHASE_WAIT_USER_FIX
 } App_PowerResetPhase;
+
+typedef enum {
+    APP_POWER_RESET_WAIT_NONE = 0,
+    APP_POWER_RESET_WAIT_Y_READY,
+    APP_POWER_RESET_WAIT_Z_HOME
+} App_PowerResetWaitReason;
 
 static App_State app_state = APP_STATE_IDLE;
 static App_Alarm app_alarm = APP_ALARM_NONE;
@@ -73,6 +80,7 @@ static bool app_leak_fault_latched = false;
 
 /* 上电复位分为“先下行”和“再上找 PG3”两个子阶段。 */
 static App_PowerResetPhase app_power_reset_phase = APP_POWER_RESET_PHASE_NONE;
+static App_PowerResetWaitReason app_power_reset_wait_reason = APP_POWER_RESET_WAIT_NONE;
 static uint32_t app_power_reset_start_tick = 0U;
 
 /*
@@ -103,6 +111,9 @@ static uint32_t Now(void)
 static void App_Fail(App_Alarm alarm);
 static void App_EnterAspirateMove(uint8_t phase_index);
 static void App_TaskLeakDetect(void);
+static void App_PausePowerResetForUser(App_PowerResetWaitReason reason);
+static void App_StartPowerResetDown(void);
+static void App_ReportStatus(bool force);
 
 static uint32_t Elapsed(uint32_t start_tick)
 {
@@ -163,11 +174,6 @@ static PG_ID App_ZPosSensorPG(App_ZPosition pos)
 static bool App_ZPosHasSensor(App_ZPosition pos)
 {
     return PG_IsValid(App_ZPosSensorPG(pos));
-}
-
-static bool App_ZPosIsVirtual(App_ZPosition pos)
-{
-    return App_ZPosIsValid(pos) && !App_ZPosHasSensor(pos);
 }
 
 static bool App_ZPosSensorActive(App_ZPosition pos)
@@ -572,13 +578,23 @@ static bool App_ZDirectionIsReverse(uint8_t first, uint8_t second)
            (first == APP_Z_DOWN_DIRECTION && second == APP_Z_UP_DIRECTION);
 }
 
+static bool App_IsYReadyForZMotion(void)
+{
+    return PG_IsActive(APP_Y_READY_PG);
+}
+
 static bool App_CheckYReadyForZMotion(void)
 {
-    if (PG_IsActive(APP_Y_READY_PG)) {
+    if (App_IsYReadyForZMotion()) {
         return true;
     }
 
     Logger_Info("SAFE", "y_not_ready_during_z_motion");
+    if (app_state == APP_STATE_POWER_ON_RESET) {
+        App_PausePowerResetForUser(APP_POWER_RESET_WAIT_Y_READY);
+        return false;
+    }
+
     App_Fail(APP_ALARM_Y_NOT_READY);
     Screen_ShowWarningPage();
     return false;
@@ -666,9 +682,57 @@ static void App_AllStop(void)
     app_step_start_tick = 0U;
     app_step_duration_ms = 0U;
     app_power_reset_phase = APP_POWER_RESET_PHASE_NONE;
+    app_power_reset_wait_reason = APP_POWER_RESET_WAIT_NONE;
     app_power_reset_start_tick = 0U;
     app_manual_z_action = PROTOCOL_MANUAL_ACTION_NONE;
     app_manual_pump_action = PROTOCOL_MANUAL_ACTION_NONE;
+}
+
+static void App_PausePowerResetForUser(App_PowerResetWaitReason reason)
+{
+    App_Alarm alarm = APP_ALARM_Z_TIMEOUT;
+
+    if (app_power_reset_phase == APP_POWER_RESET_PHASE_WAIT_USER_FIX) {
+        return;
+    }
+
+    if (reason == APP_POWER_RESET_WAIT_Y_READY) {
+        alarm = APP_ALARM_Y_NOT_READY;
+    }
+
+    App_AllStop();
+    app_alarm = alarm;
+    app_power_reset_phase = APP_POWER_RESET_PHASE_WAIT_USER_FIX;
+    app_power_reset_wait_reason = reason;
+    app_auto_after_home = false;
+    app_return_after_success = false;
+    App_SetState(APP_STATE_POWER_ON_RESET);
+    Logger_Value("BOOT", "power_reset_wait_reason", (uint32_t)reason);
+    Screen_ShowAlarm((uint16_t)alarm);
+    Screen_ShowMessage("PWR WARN");
+    Screen_ShowWarningPage();
+    App_ReportStatus(true);
+}
+
+static void App_ResumePowerResetAfterUserFix(void)
+{
+    if (app_state != APP_STATE_POWER_ON_RESET ||
+        app_power_reset_phase != APP_POWER_RESET_PHASE_WAIT_USER_FIX) {
+        return;
+    }
+
+    if (app_power_reset_wait_reason == APP_POWER_RESET_WAIT_Y_READY &&
+        !App_IsYReadyForZMotion()) {
+        Logger_Info("BOOT", "power_reset_resume_rejected reason=Y_NOT_READY");
+        Screen_ShowAlarm((uint16_t)APP_ALARM_Y_NOT_READY);
+        Screen_ShowMessage("PWR WARN");
+        Screen_ShowWarningPage();
+        App_ReportStatus(true);
+        return;
+    }
+
+    Logger_Value("BOOT", "power_reset_resume", (uint32_t)app_power_reset_wait_reason);
+    App_StartPowerResetDown();
 }
 
 static uint16_t App_ZSpeed(void)
@@ -699,7 +763,7 @@ static void App_CompleteZStep(void)
     app_step_duration_ms = 0U;
 }
 
-static bool App_TryPassThroughAspirateVirtualTarget(void)
+static bool App_TryPassThroughZeroDwellAspirateTarget(void)
 {
     App_ZPosition reached_pos;
     App_ZPosition next_pos;
@@ -719,8 +783,7 @@ static bool App_TryPassThroughAspirateVirtualTarget(void)
         return false;
     }
 
-    if (app_aspirate_dwell_sequence[app_phase_index] != 0U ||
-        !App_ZPosIsVirtual(app_step_target_pos)) {
+    if (app_aspirate_dwell_sequence[app_phase_index] != 0U) {
         return false;
     }
 
@@ -736,7 +799,7 @@ static bool App_TryPassThroughAspirateVirtualTarget(void)
     app_step_start_tick = 0U;
     app_step_duration_ms = 0U;
 
-    Logger_Info("ASP", "pass_zero_virtual");
+    Logger_Info("ASP", "pass_zero_dwell");
     app_phase_index++;
     App_EnterAspirateMove(app_phase_index);
     return true;
@@ -839,6 +902,7 @@ static void App_EnterAspirateMove(uint8_t phase_index)
 static void App_StartPowerResetHomeSeek(void)
 {
     app_power_reset_phase = APP_POWER_RESET_PHASE_UP;
+    app_power_reset_wait_reason = APP_POWER_RESET_WAIT_NONE;
     app_power_reset_start_tick = 0U;
     app_current_pos = APP_Z_POS_INVALID;
     Logger_Info("BOOT", "power_reset_up_seek_home");
@@ -857,6 +921,7 @@ static void App_StartPowerResetDown(void)
     app_step_start_tick = 0U;
     app_step_duration_ms = 0U;
     app_current_pos = APP_Z_POS_INVALID;
+    app_power_reset_wait_reason = APP_POWER_RESET_WAIT_NONE;
     App_SetState(APP_STATE_POWER_ON_RESET);
 
     if (PG_IsActive(APP_Z_BOTTOM_PG)) {
@@ -900,6 +965,10 @@ static bool App_TargetReached(void)
 
     if (App_ZPosHasSensor(app_step_target_pos)) {
         if (App_ZPosSensorActive(app_step_target_pos)) {
+            if (App_TryPassThroughZeroDwellAspirateTarget()) {
+                return false;
+            }
+
             App_CompleteZStep();
             if (app_current_pos == app_target_pos) {
                 return true;
@@ -910,7 +979,7 @@ static bool App_TargetReached(void)
     }
 
     if (Elapsed(app_step_start_tick) >= app_step_duration_ms) {
-        if (App_TryPassThroughAspirateVirtualTarget()) {
+        if (App_TryPassThroughZeroDwellAspirateTarget()) {
             return false;
         }
 
@@ -944,6 +1013,10 @@ static uint32_t App_MoveTimeoutLimitMs(void)
 
 static void App_TaskPowerOnReset(void)
 {
+    if (app_power_reset_phase == APP_POWER_RESET_PHASE_WAIT_USER_FIX) {
+        return;
+    }
+
     if (app_power_reset_phase == APP_POWER_RESET_PHASE_DOWN) {
         if (!App_CheckYReadyForZMotion()) {
             return;
@@ -982,7 +1055,8 @@ static void App_TaskPowerOnReset(void)
         App_SetState(APP_STATE_IDLE);
         Screen_ShowMessage("READY");
     } else if (App_MoveTimedOut()) {
-        App_Fail(APP_ALARM_Z_TIMEOUT);
+        Logger_Info("BOOT", "power_reset_wait_user_fix reason=Z_HOME_TIMEOUT");
+        App_PausePowerResetForUser(APP_POWER_RESET_WAIT_Z_HOME);
     }
 }
 
@@ -1020,8 +1094,8 @@ static bool App_LeakIsNormal(void)
         return true;
     }
 
-    /* 漏水检测与普通 PG 触发语义相反：低电平为正常，高电平为异常。 */
-    return PG_ReadRaw(APP_LEAK_PG) == GPIO_PIN_RESET;
+    /* 漏水检测使用原始电平：高电平为正常，低电平为异常。 */
+    return PG_ReadRaw(APP_LEAK_PG) == GPIO_PIN_SET;
 #else
     return true;
 #endif
@@ -1031,19 +1105,19 @@ static void App_LogLeakStatus(bool normal, const char *mode_text)
 {
     if (normal) {
         if (mode_text == 0) {
-            Logger_Info("LEAK", "state=normal raw=LOW");
+            Logger_Info("LEAK", "state=normal raw=HIGH");
         } else if (mode_text[0] == 't') {
-            Logger_Info("LEAK", "mode=test state=normal raw=LOW");
+            Logger_Info("LEAK", "mode=test state=normal raw=HIGH");
         } else {
-            Logger_Info("LEAK", "mode=formal state=normal raw=LOW");
+            Logger_Info("LEAK", "mode=formal state=normal raw=HIGH");
         }
     } else {
         if (mode_text == 0) {
-            Logger_Info("LEAK", "state=abnormal raw=HIGH");
+            Logger_Info("LEAK", "state=abnormal raw=LOW");
         } else if (mode_text[0] == 't') {
-            Logger_Info("LEAK", "mode=test state=abnormal raw=HIGH");
+            Logger_Info("LEAK", "mode=test state=abnormal raw=LOW");
         } else {
-            Logger_Info("LEAK", "mode=formal state=abnormal raw=HIGH");
+            Logger_Info("LEAK", "mode=formal state=abnormal raw=LOW");
         }
     }
 }
@@ -1543,6 +1617,14 @@ static void App_HandleCommand(const Protocol_Command *command)
         break;
 
     case PROTOCOL_CMD_STOP:
+        if (app_state == APP_STATE_POWER_ON_RESET &&
+            app_power_reset_phase == APP_POWER_RESET_PHASE_WAIT_USER_FIX) {
+            Logger_Info("CMD", "stop_ignored reason=POWER_RESET_WAIT_USER_FIX");
+            Screen_ShowMessage("PWR WARN");
+            Screen_ShowWarningPage();
+            App_ReportStatus(true);
+            break;
+        }
         App_AllStop();
         app_auto_after_home = false;
         app_return_after_success = false;
@@ -1578,8 +1660,12 @@ static void App_HandleCommand(const Protocol_Command *command)
         break;
 
     case PROTOCOL_CMD_OK:
-        /* 人工用 10ml 清洗接液烧杯并补加完成后，屏幕发送 #OK; 确认整套流程完成。 */
-        if (app_state == APP_STATE_WAIT_MANUAL_CUP_CLEAN) {
+        /* 上电复位暂停等待人工修正时，屏幕发送 #OK; 后重新执行复位。 */
+        if (app_state == APP_STATE_POWER_ON_RESET &&
+            app_power_reset_phase == APP_POWER_RESET_PHASE_WAIT_USER_FIX) {
+            App_ResumePowerResetAfterUserFix();
+        } else if (app_state == APP_STATE_WAIT_MANUAL_CUP_CLEAN) {
+            /* 人工用 10ml 清洗接液烧杯并补加完成后，屏幕发送 #OK; 确认整套流程完成。 */
             app_manual_reserved_ml = 0U;
             App_SetState(APP_STATE_DONE);
             Screen_ShowMessage("DONE");
@@ -1961,9 +2047,9 @@ void App_Init(void)
 #if APP_LEAK_DETECT_ENABLE
     Logger_Value("LEAK", "pg", PG_ToNumber(APP_LEAK_PG));
 #if APP_LEAK_DETECT_TEST_ONLY
-    Logger_Info("LEAK", "mode=test low=normal action=log_only");
+    Logger_Info("LEAK", "mode=test high=normal action=log_only");
 #else
-    Logger_Info("LEAK", "mode=formal low=normal action=all_stop");
+    Logger_Info("LEAK", "mode=formal high=normal action=all_stop");
 #endif
 #endif
 

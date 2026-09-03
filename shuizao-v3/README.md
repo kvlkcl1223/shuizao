@@ -74,13 +74,16 @@ MCU 每次上电或执行 `#RESET;` 软件复位后，会自动进入上电复�
 7. 下行结束后，Z 轴先进入 `APP_Z_REVERSE_DEADTIME_MS` 空档停顿，再向最高点运动。
 8. 当前默认最高点为 PG3，即 `APP_Z_HOME_PG`。
 9. PG3 触发后停止，状态进入 `IDLE`。
-10. 如果超过 `APP_HOME_TIMEOUT_MS` 仍未触发 PG3，进入 `ERROR` 并报 `Z_TIMEOUT`。
+10. 如果超过 `APP_HOME_TIMEOUT_MS` 仍未触发 PG3，MCU 会停止全部动作、报 `Z_TIMEOUT`、跳转 `warn` 页面，并停留在上电复位等待人工修正状态。
+11. 用户将 Z 轴机械位置处理正确后，在 `warn` 页面点击确认并发送 `#OK;`，MCU 会重新执行上电复位。
 
 上电复位过程中：
 
 - `#START;`、`#MAN;`、`#SET;` 会被当作忙碌状态拒绝。
 - `#STOP;` 不取消复位；若处于下行阶段，会停止下行并继续上行寻找 PG3。
+- 如果已经卡在上电复位等待人工修正状态，`#STOP;` 不会恢复运动，只会继续保持警告；需要通过 `#OK;` 继续复位。
 - `#ESTOP;` 仍然立即停机。
+- 如果 Y 轴允许位置 `APP_Y_READY_PG` 不满足，MCU 同样会停止动作、跳转 `warn` 页面，并等待人工修正后通过 `#OK;` 继续复位。
 
 Z 轴所有可能从上行切到下行、或从下行切到上行的动作，都会先空档停顿 `APP_Z_REVERSE_DEADTIME_MS`，避免驱动芯片直接正反转切换。
 
@@ -177,7 +180,7 @@ Z 轴所有可能从上行切到下行、或从下行切到上行的动作，都
 | `APP_ASP_DWELL_100_MS` | 100ml/PG6 到位后的继续吸取时间 |
 | `APP_ASP_DWELL_50_MS` | 50ml/PG7 到位后的继续吸取时间 |
 
-如果 800/700/600/500/400/300ml 这些虚拟吸取位置的停留时间设为 `0U`，并且下一段仍然同方向下行，状态机会连续通过该虚拟位置：不主动刹车、不进入停留吸取状态，直接切到下一段移动。200/150/100/50ml 是真实 PG 定位位置，即使停留时间设为 `0U`，仍会先按 PG 到位并停止确认。
+如果吸取阶段的停留时间设为 `0U`，并且下一段仍然同方向下行，状态机会连续通过该位置：不主动刹车、不进入停留吸取状态，直接切到下一段移动。这个规则同时适用于 800/700/600/500/400/300ml 虚拟位置，以及 200/150/100ml 这类真实 PG 位置。最终目标位置和后面不再同方向移动的位置仍会停止，例如 50ml/PG7 作为最终目标时不会继续向下。
 
 `#SET,ASP_MS,<time_ms>;` 仍保留给旧协议兼容，但新的分阶段吸取默认不再用它决定各档位停留时间。
 
@@ -1010,8 +1013,8 @@ const PG_ID APP_LEAK_PG = PG_8;
 
 漏水输入的电平定义和普通位置 PG 的“触发”语义不同：
 
-- `PG8` 低电平：正常
-- `PG8` 高电平：漏水异常
+- `PG8` 高电平：正常
+- `PG8` 低电平：漏水异常
 
 因此漏水检测代码读取的是 `PG_ReadRaw(APP_LEAK_PG)` 原始电平，而不是把 `PG_IsActive(APP_LEAK_PG)` 当成异常判断。
 
@@ -1019,14 +1022,16 @@ const PG_ID APP_LEAK_PG = PG_8;
 
 ```c
 #define APP_LEAK_DETECT_ENABLE 1U
-#define APP_LEAK_DETECT_TEST_ONLY 1U
+#define APP_LEAK_DETECT_TEST_ONLY 0U
 #define APP_LEAK_CHECK_INTERVAL_MS 200U
 #define APP_LEAK_TEST_LOG_INTERVAL_MS 1000U
 #define APP_LEAK_DEBOUNCE_COUNT 3U
 #define APP_SCREEN_LEAK_WARNING_PAGE "leak_warn"
 ```
 
-测试模式下，`APP_LEAK_DETECT_TEST_ONLY` 为 `1U`，MCU 只通过 USART2 输出漏水状态日志，不停止电机和泵，也不跳转屏幕报警页面。正式模式下，把该宏改为 `0U`；MCU 会定时检测 PG8，连续异常达到防抖次数后触发 `APP_ALARM_LEAK_DETECTED`，报警码为 `8`，立即停止全部动作，并跳转到 `leak_warn` 页面。
+当前默认是正式模式，`APP_LEAK_DETECT_TEST_ONLY` 为 `0U`。MCU 会定时检测 PG8，连续低电平异常达到防抖次数后触发 `APP_ALARM_LEAK_DETECTED`，报警码为 `8`，立即停止全部动作，并跳转到 `leak_warn` 页面。
+
+如果需要临时测试漏水输入，把 `APP_LEAK_DETECT_TEST_ONLY` 改为 `1U`。测试模式下 MCU 只通过 USART2 输出漏水状态日志，不停止电机和泵，也不跳转屏幕报警页面。
 
 HMI 需要新增页面：
 
