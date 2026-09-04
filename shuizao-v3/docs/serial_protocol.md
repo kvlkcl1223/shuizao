@@ -311,7 +311,7 @@ prints "#OK;",0
 #GET,MSPD;
 ```
 
-当前实现中，查询命令会触发 MCU 立即刷新屏幕控件。
+当前实现中，查询命令会触发 MCU 立即刷新屏幕控件。查询命令属于只读操作，在上电复位、自动流程或手动流程中也允许发送，不会因为设备正在运行而触发 `BUSY`。
 
 - `#GET,PG;`：刷新 PG 掩码。
 - `#GET,STATE;`：刷新状态、报警、速度、阶段和进度。
@@ -336,8 +336,8 @@ prints "#OK;",0
 - 保存内容包括 4 个体积档位共 24 个第一段喷淋时间、4 个 Z 轴虚拟位置时间、自动吸取速度、手动泵默认速度。
 - 这样做是为了避免 Flash 中喷淋参数和 Z 虚拟位置参数互相覆盖。
 - MCU 初始化时优先从 Flash 读取；Flash 记录无效时使用 `app_config.h` 默认值。
-- 自动流程运行中发送保存命令会被拒绝并显示 `BUSY`。
-- 保存成功显示 `SAVE OK`，保存失败显示 `SAVE ERR` 并报 `SAVE_FAILED`。
+- 自动流程运行中发送保存命令会被拒绝并上报 `BUSY`。
+- 保存成功时 `n_alarm.val` 回到 0；保存失败时 `n_alarm.val` 为 `SAVE_FAILED`。MCU 不再发送英文文本状态，中文提示由 HMI 根据 `n_alarm.val` 自行显示。
 
 ## 8. MCU 到屏幕状态刷新
 
@@ -351,7 +351,6 @@ FF FF FF
 
 | 控件宏 | 默认控件 | 含义 |
 |---|---|---|
-| `APP_SCREEN_MESSAGE_OBJ` | `t6` | 状态文本 |
 | `APP_SCREEN_STATE_OBJ` | `n_state` | 状态码 |
 | `APP_SCREEN_PHASE_OBJ` | `n_phase` | 当前阶段，空闲时为 0 |
 | `APP_SCREEN_SPEED_OBJ` | `n_speed` | 当前吸取速度百分比 |
@@ -400,7 +399,6 @@ PG 掩码规则：
 ```text
 n_speed.val=60 FF FF FF
 n_pgmask.val=3 FF FF FF
-t6.txt="READY" FF FF FF
 h_spray1_ms.val=3500 FF FF FF
 n_spray1_ms.val=3500 FF FF FF
 n_spray_vol.val=100 FF FF FF
@@ -429,7 +427,7 @@ t_spray_vol.txt="100ml" FF FF FF
 | 13 | `MANUAL` | 手动控制 |
 | 14 | `POWER_ON_RESET` | 上电复位到最高点中；也包含复位异常后等待人工修正 |
 
-建议 HMI 用 `n_state.val` 做中文映射，而不是依赖 `t6` 的英文短文本。
+MCU 当前不再发送状态文本控件。建议 HMI 用 `n_state.val` 和 `n_alarm.val` 做中文映射。
 
 ## 10. 报警码
 
@@ -527,6 +525,8 @@ HOME(PG3) -> 800(虚拟) -> 700(虚拟) -> 600(虚拟) -> 500(虚拟) -> 400(虚
 - 目标为 100ml 时，真实吸取执行 PG4/200ml、PG5/150ml 和 PG6/100ml。
 - 目标为 50ml 时，真实吸取执行 PG4/200ml、PG5/150ml、PG6/100ml 和 PG7/50ml。
 - 从 200ml 往后继续下降时泵保持吸取，不在相邻真实档位之间停止。
+- 喷淋移动、回原点和自动开始前回原点经过中间位置时，如果下一段仍然同方向移动，状态机会连续通过该中间位置，不主动刹车。
+- 最终目标仍然会停车，例如喷淋目标 300ml、喷淋目标 800ml、回原点 PG3 都会停止。
 - 吸取停留时间由 `APP_ASP_DWELL_800_MS` 到 `APP_ASP_DWELL_50_MS` 分别定义，当前默认全部为 `3000ms`。
 - 这些吸取停留时间表示 100% 满速泵下的标定时间；自动运行时会按当前自动吸取速度换算，近似关系为 `实际停留时间 = 满速标定时间 * 100 / 自动吸取速度百分比`。例如满速标定 `3000ms`，`#SPD,60;` 后实际停留约 `5000ms`。
 - 换算后的时间仍受 `APP_TIME_MAX_MS` 上限限制。

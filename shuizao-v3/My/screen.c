@@ -19,7 +19,7 @@ static void Screen_SendEnd(void)
 
 void Screen_Init(void)
 {
-    Screen_ShowMessage("READY");
+    /* 文本状态由 HMI 根据 n_state/n_alarm 自行映射，MCU 不再写文本状态控件。 */
 }
 
 void Screen_Command(const char *command)
@@ -60,7 +60,8 @@ void Screen_SetValue(const char *object_name, int32_t value)
 
 void Screen_ShowMessage(const char *text)
 {
-    Screen_SetText(APP_SCREEN_MESSAGE_OBJ, text);
+    /* 保留接口兼容旧业务调用，但不再向文本状态控件发送命令。 */
+    (void)text;
 }
 
 void Screen_ShowAlarm(uint16_t alarm_code)

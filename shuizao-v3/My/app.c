@@ -112,6 +112,7 @@ static void App_Fail(App_Alarm alarm);
 static void App_EnterAspirateMove(uint8_t phase_index);
 static void App_TaskLeakDetect(void);
 static void App_PausePowerResetForUser(App_PowerResetWaitReason reason);
+static void App_StartNextZStep(void);
 static void App_StartPowerResetDown(void);
 static void App_ReportStatus(bool force);
 
@@ -763,6 +764,45 @@ static void App_CompleteZStep(void)
     app_step_duration_ms = 0U;
 }
 
+static bool App_MoveStateAllowsIntermediatePassThrough(void)
+{
+    return app_state == APP_STATE_HOMING ||
+           app_state == APP_STATE_MOVE_TO_ASPIRATE ||
+           app_state == APP_STATE_MOVE_TO_SPRAY ||
+           app_state == APP_STATE_RETURN_HOME;
+}
+
+static bool App_TryPassThroughIntermediateMoveTarget(void)
+{
+    App_ZPosition reached_pos;
+    uint8_t next_direction;
+
+    if (!App_MoveStateAllowsIntermediatePassThrough()) {
+        return false;
+    }
+
+    if (!App_ZPosIsValid(app_step_target_pos) ||
+        !App_ZPosIsValid(app_target_pos) ||
+        app_step_target_pos == app_target_pos) {
+        return false;
+    }
+
+    reached_pos = app_step_target_pos;
+    if (!App_ZMoveDirectionBetween(reached_pos, app_target_pos, &next_direction) ||
+        next_direction != app_step_direction) {
+        return false;
+    }
+
+    app_current_pos = reached_pos;
+    app_step_target_pos = APP_Z_POS_INVALID;
+    app_step_start_tick = 0U;
+    app_step_duration_ms = 0U;
+
+    Logger_Info("MOVE", "pass_intermediate");
+    App_StartNextZStep();
+    return true;
+}
+
 static bool App_TryPassThroughZeroDwellAspirateTarget(void)
 {
     App_ZPosition reached_pos;
@@ -968,6 +1008,9 @@ static bool App_TargetReached(void)
             if (App_TryPassThroughZeroDwellAspirateTarget()) {
                 return false;
             }
+            if (App_TryPassThroughIntermediateMoveTarget()) {
+                return false;
+            }
 
             App_CompleteZStep();
             if (app_current_pos == app_target_pos) {
@@ -980,6 +1023,9 @@ static bool App_TargetReached(void)
 
     if (Elapsed(app_step_start_tick) >= app_step_duration_ms) {
         if (App_TryPassThroughZeroDwellAspirateTarget()) {
+            return false;
+        }
+        if (App_TryPassThroughIntermediateMoveTarget()) {
             return false;
         }
 
@@ -1704,44 +1750,28 @@ static void App_HandleCommand(const Protocol_Command *command)
         break;
 
     case PROTOCOL_CMD_GET_SPRAY_MS:
-        if (!App_IsAutoRunning()) {
-            int8_t profile_index = App_RequireSprayProfile(command->spray_volume_ml);
-            if (profile_index >= 0) {
-                Screen_UpdateSprayTimes(App_SprayMsForProfile((uint8_t)profile_index),
-                                       command->spray_volume_ml);
-                app_alarm = APP_ALARM_NONE;
-                App_ReportStatus(true);
-            }
-        } else {
-            app_alarm = APP_ALARM_BUSY;
-            Logger_Info("GET", "spray_ms_rejected reason=BUSY");
-            Screen_ShowMessage("BUSY");
-            Screen_ShowAlarm((uint16_t)app_alarm);
+    {
+        int8_t profile_index = App_RequireSprayProfile(command->spray_volume_ml);
+        if (profile_index >= 0) {
+            Screen_UpdateSprayTimes(App_SprayMsForProfile((uint8_t)profile_index),
+                                   command->spray_volume_ml);
+            App_ReportStatus(true);
         }
         break;
+    }
 
     case PROTOCOL_CMD_GET_ZVIRT_MS:
-        if (!App_IsAutoRunning()) {
-            Screen_UpdateZVirtTimes(app_zvirt_ms);
-            app_alarm = APP_ALARM_NONE;
-            App_ReportStatus(true);
-        } else {
-            app_alarm = APP_ALARM_BUSY;
-            Logger_Info("GET", "zvirt_ms_rejected reason=BUSY");
-            Screen_ShowMessage("BUSY");
-            Screen_ShowAlarm((uint16_t)app_alarm);
-        }
+        Screen_UpdateZVirtTimes(app_zvirt_ms);
+        App_ReportStatus(true);
         break;
 
     case PROTOCOL_CMD_GET_SPEED:
         Screen_UpdatePumpSpeed(app_aspirate_speed_percent);
-        app_alarm = APP_ALARM_NONE;
         App_ReportStatus(true);
         break;
 
     case PROTOCOL_CMD_GET_MANUAL_SPEED:
         Screen_UpdateManualPumpSpeed(app_manual_pump_speed_percent);
-        app_alarm = APP_ALARM_NONE;
         App_ReportStatus(true);
         break;
 

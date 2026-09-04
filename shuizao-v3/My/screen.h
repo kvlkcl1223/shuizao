@@ -25,7 +25,7 @@ void Screen_SetText(const char *object_name, const char *text);
 /* 设置数值控件内容。 */
 void Screen_SetValue(const char *object_name, int32_t value);
 
-/* 更新默认状态文本控件。 */
+/* 兼容旧状态文本调用；当前版本不再向 HMI 文本控件发送状态文本。 */
 void Screen_ShowMessage(const char *text);
 
 /* 更新默认报警码控件。 */

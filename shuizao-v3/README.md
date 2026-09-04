@@ -182,6 +182,8 @@ Z 轴所有可能从上行切到下行、或从下行切到上行的动作，都
 
 如果吸取阶段的停留时间设为 `0U`，并且下一段仍然同方向下行，状态机会连续通过该位置：不主动刹车、不进入停留吸取状态，直接切到下一段移动。这个规则同时适用于 800/700/600/500/400/300ml 虚拟位置，以及 200/150/100ml 这类真实 PG 位置。最终目标位置和后面不再同方向移动的位置仍会停止，例如 50ml/PG7 作为最终目标时不会继续向下。
 
+自动流程中的喷淋移动、回原点和自动开始前回原点也会连续通过中间位置：只要当前路过点不是最终目标，且下一段仍然同方向移动，状态机不会主动刹车停顿。最终目标仍然会停车，例如喷淋目标 300ml、喷淋目标 800ml、回原点 PG3 都会停止。
+
 `#SET,ASP_MS,<time_ms>;` 仍保留给旧协议兼容，但新的分阶段吸取默认不再用它决定各档位停留时间。
 
 每个吸取阶段使用同一个自动吸取泵速：
@@ -375,6 +377,7 @@ Z 轴所有可能从上行切到下行、或从下行切到上行的动作，都
 
 - MCU 立即刷新屏幕状态控件。
 - `n_pgmask.val` 可用于观察 PG1~PG16 哪一路正在触发。
+- 查询命令属于只读操作，上电复位、自动流程或手动流程中也允许发送，不会触发 `BUSY`。
 
 PG 掩码：
 
@@ -390,7 +393,6 @@ MCU 默认写这些控件名，定义在 `My/app_config.h`：
 
 | 控件名 | 类型建议 | 作用 |
 |---|---|---|
-| `t6` | 文本 | MCU 状态短文本 |
 | `n_state` | 数值 | MCU 状态码 |
 | `n_phase` | 数值 | 当前阶段号 |
 | `n_speed` | 数值 | 当前吸取泵速百分比 |
@@ -414,7 +416,7 @@ Y 轴异常警告页面：
 
 - `My/app_config.h` 中的 `APP_SCREEN_*_OBJ`
 
-建议 HMI 用 `n_state.val` 和 `n_alarm.val` 做中文界面逻辑，不要依赖 `t6` 的英文短文本。
+MCU 当前不再发送状态文本控件。建议 HMI 用 `n_state.val` 和 `n_alarm.val` 做中文界面逻辑。
 
 第一段喷淋补偿时间页面：
 
@@ -771,7 +773,6 @@ const uint8_t APP_PUMP_OUT_DIRECTION = MOTOR_REVERSE;
 重点修改：
 
 ```c
-#define APP_SCREEN_MESSAGE_OBJ          "t6"
 #define APP_SCREEN_STATE_OBJ            "n_state"
 #define APP_SCREEN_PHASE_OBJ            "n_phase"
 #define APP_SCREEN_SPEED_OBJ            "n_speed"
@@ -870,9 +871,9 @@ const uint8_t APP_PUMP_OUT_DIRECTION = MOTOR_REVERSE;
 3. 确认能看到 `[BOOT] logger_ready ...`、`[BOOT] tim5_heartbeat_start ...` 等启动日志。
 4. 确认 LED1 大约每 1s 翻转一次。如果不闪，优先检查 TIM5 是否启动、`APP_LED1_HEARTBEAT_TIM5_TICKS` 是否匹配 TIM5 周期、LED1 引脚是否仍为 PB4。
 5. 打开串口屏页面。
-6. 确认上电后 `n_state.val` 先进入 14，或 `t6` 显示 `PWR HOME`。
+6. 确认上电后 `n_state.val` 先进入 14。
 7. 确认 Z 轴向最高点 PG3 运动。
-8. PG3 触发后，确认 `t6` 显示 `READY`，或 `n_state.val` 为 0。
+8. PG3 触发后，确认 `n_state.val` 为 0。
 9. 发送 `#GET,STATE;`，确认屏幕状态控件能刷新，同时 USART2 应输出 `[CMD] rx=GET_STATE ...`。
 
 ### 9.2 PG 输入检查
