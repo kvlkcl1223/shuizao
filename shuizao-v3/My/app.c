@@ -82,6 +82,10 @@ static bool app_leak_fault_latched = false;
 static App_PowerResetPhase app_power_reset_phase = APP_POWER_RESET_PHASE_NONE;
 static App_PowerResetWaitReason app_power_reset_wait_reason = APP_POWER_RESET_WAIT_NONE;
 static uint32_t app_power_reset_start_tick = 0U;
+static uint32_t app_y_ready_resume_last_check_tick = 0U;
+static uint32_t app_y_ready_resume_hold_start_tick = 0U;
+static uint8_t app_y_ready_resume_count = 0U;
+static bool app_y_ready_resume_holding = false;
 
 /*
  * Z 轴反向保护。
@@ -112,6 +116,7 @@ static void App_Fail(App_Alarm alarm);
 static void App_EnterAspirateMove(uint8_t phase_index);
 static void App_TaskLeakDetect(void);
 static void App_PausePowerResetForUser(App_PowerResetWaitReason reason);
+static void App_TaskPowerResetWaitYReady(void);
 static void App_StartNextZStep(void);
 static void App_StartPowerResetDown(void);
 static void App_ReportStatus(bool force);
@@ -672,6 +677,14 @@ static bool App_ZDeadtimeTask(void)
     return true;
 }
 
+static void App_ResetYReadyAutoResume(void)
+{
+    app_y_ready_resume_last_check_tick = 0U;
+    app_y_ready_resume_hold_start_tick = 0U;
+    app_y_ready_resume_count = 0U;
+    app_y_ready_resume_holding = false;
+}
+
 static void App_AllStop(void)
 {
     /* 紧急停机共用出口：停全部泵，Z 轴刹车，并清手动动作记录。 */
@@ -685,6 +698,7 @@ static void App_AllStop(void)
     app_power_reset_phase = APP_POWER_RESET_PHASE_NONE;
     app_power_reset_wait_reason = APP_POWER_RESET_WAIT_NONE;
     app_power_reset_start_tick = 0U;
+    App_ResetYReadyAutoResume();
     app_manual_z_action = PROTOCOL_MANUAL_ACTION_NONE;
     app_manual_pump_action = PROTOCOL_MANUAL_ACTION_NONE;
 }
@@ -705,6 +719,12 @@ static void App_PausePowerResetForUser(App_PowerResetWaitReason reason)
     app_alarm = alarm;
     app_power_reset_phase = APP_POWER_RESET_PHASE_WAIT_USER_FIX;
     app_power_reset_wait_reason = reason;
+    if (reason == APP_POWER_RESET_WAIT_Y_READY) {
+        app_y_ready_resume_last_check_tick = Now();
+        app_y_ready_resume_hold_start_tick = 0U;
+        app_y_ready_resume_count = 0U;
+        app_y_ready_resume_holding = false;
+    }
     app_auto_after_home = false;
     app_return_after_success = false;
     App_SetState(APP_STATE_POWER_ON_RESET);
@@ -734,6 +754,46 @@ static void App_ResumePowerResetAfterUserFix(void)
 
     Logger_Value("BOOT", "power_reset_resume", (uint32_t)app_power_reset_wait_reason);
     App_StartPowerResetDown();
+}
+
+static void App_TaskPowerResetWaitYReady(void)
+{
+    uint32_t now = Now();
+
+    if (Elapsed(app_y_ready_resume_last_check_tick) < APP_Y_READY_RESUME_CHECK_MS) {
+        return;
+    }
+    app_y_ready_resume_last_check_tick = now;
+
+    if (!App_IsYReadyForZMotion()) {
+        app_y_ready_resume_count = 0U;
+        app_y_ready_resume_hold_start_tick = 0U;
+        if (app_y_ready_resume_holding) {
+            Logger_Info("BOOT", "y_ready_hold_cancelled");
+        }
+        app_y_ready_resume_holding = false;
+        return;
+    }
+
+    if (app_y_ready_resume_count < APP_Y_READY_RESUME_DEBOUNCE_COUNT) {
+        app_y_ready_resume_count++;
+    }
+
+    if (app_y_ready_resume_count < APP_Y_READY_RESUME_DEBOUNCE_COUNT) {
+        return;
+    }
+
+    if (!app_y_ready_resume_holding) {
+        app_y_ready_resume_holding = true;
+        app_y_ready_resume_hold_start_tick = now;
+        Logger_Info("BOOT", "y_ready_debounced_hold_start");
+        return;
+    }
+
+    if (Elapsed(app_y_ready_resume_hold_start_tick) >= APP_Y_READY_RESUME_HOLD_MS) {
+        Logger_Info("BOOT", "y_ready_auto_resume_power_reset");
+        App_StartPowerResetDown();
+    }
 }
 
 static uint16_t App_ZSpeed(void)
@@ -1060,6 +1120,9 @@ static uint32_t App_MoveTimeoutLimitMs(void)
 static void App_TaskPowerOnReset(void)
 {
     if (app_power_reset_phase == APP_POWER_RESET_PHASE_WAIT_USER_FIX) {
+        if (app_power_reset_wait_reason == APP_POWER_RESET_WAIT_Y_READY) {
+            App_TaskPowerResetWaitYReady();
+        }
         return;
     }
 

@@ -76,14 +76,15 @@ MCU 每次上电或执行 `#RESET;` 软件复位后，会自动进入上电复�
 9. PG3 触发后停止，状态进入 `IDLE`。
 10. 如果超过 `APP_HOME_TIMEOUT_MS` 仍未触发 PG3，MCU 会停止全部动作、报 `Z_TIMEOUT`、跳转 `warn` 页面，并停留在上电复位等待人工修正状态。
 11. 用户将 Z 轴机械位置处理正确后，在 `warn` 页面点击确认并发送 `#OK;`，MCU 会重新执行上电复位。
+12. 如果上电复位过程中 Y 轴允许位置 `APP_Y_READY_PG` 不满足，MCU 会停止全部动作、跳转 `warn` 页面，并自动定时检查 Y 轴；PG1 消抖有效并持续 1s 后自动重新执行上电复位。
 
 上电复位过程中：
 
 - `#START;`、`#MAN;`、`#SET;` 会被当作忙碌状态拒绝。
 - `#STOP;` 不取消复位；若处于下行阶段，会停止下行并继续上行寻找 PG3。
-- 如果已经卡在上电复位等待人工修正状态，`#STOP;` 不会恢复运动，只会继续保持警告；需要通过 `#OK;` 继续复位。
+- 如果因为 Z 轴找 PG3 超时卡在上电复位等待人工修正状态，`#STOP;` 不会恢复运动，只会继续保持警告；需要通过 `#OK;` 继续复位。
 - `#ESTOP;` 仍然立即停机。
-- 如果 Y 轴允许位置 `APP_Y_READY_PG` 不满足，MCU 同样会停止动作、跳转 `warn` 页面，并等待人工修正后通过 `#OK;` 继续复位。
+- 如果因为 Y 轴允许位置 `APP_Y_READY_PG` 不满足而暂停，MCU 会自动轮询 PG1，不需要 `warn` 页面发送 `#OK;`。
 
 Z 轴所有可能从上行切到下行、或从下行切到上行的动作，都会先空档停顿 `APP_Z_REVERSE_DEADTIME_MS`，避免驱动芯片直接正反转切换。
 
@@ -578,6 +579,8 @@ const PG_ID APP_Y_READY_PG = PG_1;
 - 报警 `Y_NOT_READY`。
 - 发送 `page warn` 跳转到 HMI 的 `warn` 页面。
 
+普通自动/手动流程中 PG1 失效会进入 `ERROR`。上电复位中 PG1 失效时会保持 `POWER_ON_RESET`，并按 `APP_Y_READY_RESUME_CHECK_MS` 定时检查；PG1 连续有效达到 `APP_Y_READY_RESUME_DEBOUNCE_COUNT` 次后，再保持 `APP_Y_READY_RESUME_HOLD_MS`，随后自动重新执行上电复位。
+
 如果现场确认应该用 PG2，或未来 Y 轴需要更多位置判断，就从这里扩展。
 
 ### 8.6 修改 Z 轴原点和底部
@@ -687,6 +690,9 @@ const uint8_t APP_PUMP_OUT_DIRECTION = MOTOR_REVERSE;
 #define APP_HOME_TIMEOUT_MS             45000U
 #define APP_Z_REVERSE_DEADTIME_MS       300U
 #define APP_POWER_ON_RESET_DOWN_MS      1000U
+#define APP_Y_READY_RESUME_CHECK_MS     100U
+#define APP_Y_READY_RESUME_DEBOUNCE_COUNT 3U
+#define APP_Y_READY_RESUME_HOLD_MS      1000U
 
 #define APP_ZVIRT_TIME_MIN_MS           1000U
 #define APP_ZVIRT_TIME_MAX_MS           20000U
@@ -703,6 +709,7 @@ const uint8_t APP_PUMP_OUT_DIRECTION = MOTOR_REVERSE;
 - 如果调试后确定了稳定工艺参数，应把默认值写回 `My/app_config.h`。
 - 若 Z 轴实际移动距离很长导致误报超时，调大 `APP_Z_MOVE_TIMEOUT_MS` 或 `APP_HOME_TIMEOUT_MS`。
 - `APP_POWER_ON_RESET_DOWN_MS` 是上电复位开始时的下探时间；如果触发 PG7，会提前结束下探。
+- `APP_Y_READY_RESUME_CHECK_MS`、`APP_Y_READY_RESUME_DEBOUNCE_COUNT`、`APP_Y_READY_RESUME_HOLD_MS` 控制上电复位中 Y 轴异常后的自动恢复：默认每 100ms 检查一次 PG1，连续 3 次有效后再保持 1s，随后自动重新开始复位。
 - `APP_Z_REVERSE_DEADTIME_MS` 是 Z 轴反向前的空档停顿时间；如果实际驱动仍有冲击或保护报警，应适当调大。
 
 ### 8.9 修改 USART2 日志和 LED1 生命灯
