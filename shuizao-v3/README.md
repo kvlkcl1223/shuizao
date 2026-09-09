@@ -423,6 +423,7 @@ MCU 当前不再发送状态文本控件。建议 HMI 用 `n_state.val` 和 `n_a
 
 - 页面打开时先设置 `n_spray_vol.val`，再发送 `#GET,SPRAY_MS,<n_spray_vol>;`，MCU 会回填该档位的 6 个滑轴和 6 个数值控件。
 - 切换喷淋档位按钮只修改 HMI 本地的 `n_spray_vol.val` 和 `t_spray_vol.txt`，不直接发送串口命令。
+- `n_spray_vol.val` 仍使用协议档位 `200/150/100/50`；`t_spray_vol.txt` 显示扣除 10ml 后的体积，分别为 `190ml/140ml/90ml/40ml`。
 - 滑轴弹起时发送 `#SET,SPRAYx_MS,<value>,<n_spray_vol>;`。
 - 保存按钮按下或弹起时发送 `#SAVE,SPRAY_MS;`。
 

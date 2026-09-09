@@ -85,6 +85,22 @@ void Screen_ShowLeakWarningPage(void)
     Screen_Command(buffer);
 }
 
+static uint16_t Screen_SprayVolumeDisplayMl(uint16_t volume_ml)
+{
+    switch (volume_ml) {
+    case 200U:
+        return 190U;
+    case 150U:
+        return 140U;
+    case 100U:
+        return 90U;
+    case 50U:
+        return 40U;
+    default:
+        return volume_ml;
+    }
+}
+
 void Screen_UpdateSprayTimes(const uint32_t *spray_ms, uint16_t volume_ml)
 {
     char volume_text[16];
@@ -109,7 +125,7 @@ void Screen_UpdateSprayTimes(const uint32_t *spray_ms, uint16_t volume_ml)
         return;
     }
 
-    sprintf(volume_text, "%uml", volume_ml);
+    sprintf(volume_text, "%uml", Screen_SprayVolumeDisplayMl(volume_ml));
     Screen_SetValue(APP_SCREEN_SPRAY_VOLUME_VALUE_OBJ, volume_ml);
     Screen_SetText(APP_SCREEN_SPRAY_VOLUME_TEXT_OBJ, volume_text);
 

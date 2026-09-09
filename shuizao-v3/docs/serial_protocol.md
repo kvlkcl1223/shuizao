@@ -376,8 +376,8 @@ FF FF FF
 | `APP_SCREEN_SPRAY4_VALUE_OBJ` | `n_spray4_ms` | 泵 4 喷淋时间数值 |
 | `APP_SCREEN_SPRAY5_VALUE_OBJ` | `n_spray5_ms` | 泵 5 喷淋时间数值 |
 | `APP_SCREEN_SPRAY6_VALUE_OBJ` | `n_spray6_ms` | 泵 6 喷淋时间数值 |
-| `APP_SCREEN_SPRAY_VOLUME_VALUE_OBJ` | `n_spray_vol` | 当前正在调节的喷淋档位数值，200/150/100/50 |
-| `APP_SCREEN_SPRAY_VOLUME_TEXT_OBJ` | `t_spray_vol` | 当前正在调节的喷淋档位文本，例如 `100ml` |
+| `APP_SCREEN_SPRAY_VOLUME_VALUE_OBJ` | `n_spray_vol` | 当前正在调节的协议档位数值，200/150/100/50 |
+| `APP_SCREEN_SPRAY_VOLUME_TEXT_OBJ` | `t_spray_vol` | 当前正在调节的显示体积文本，200/150/100/50 分别显示为 190/140/90/40ml |
 
 当 PG1 在任意 Z 轴动作前或动作中无效时，MCU 会停止执行机构，报警 `Y_NOT_READY`，并发送：
 
@@ -404,7 +404,7 @@ n_pgmask.val=3 FF FF FF
 h_spray1_ms.val=3500 FF FF FF
 n_spray1_ms.val=3500 FF FF FF
 n_spray_vol.val=100 FF FF FF
-t_spray_vol.txt="100ml" FF FF FF
+t_spray_vol.txt="90ml" FF FF FF
 ```
 
 ## 9. 状态码
@@ -658,13 +658,13 @@ prints ";",0
 | 控件名 | 类型建议 | 作用 |
 |---|---|---|
 | `n_spray_vol` | 数值 | 当前正在调节的体积档位，值为 200/150/100/50 |
-| `t_spray_vol` | 文本 | 当前正在调节的体积档位，例如 `100ml` |
+| `t_spray_vol` | 文本 | 当前正在调节的显示体积，200/150/100/50 分别显示为 190/140/90/40ml |
 
 页面打开时建议先设置默认档位为 200ml，再读取 MCU 当前值：
 
 ```text
 n_spray_vol.val=200
-t_spray_vol.txt="200ml"
+t_spray_vol.txt="190ml"
 cov n_spray_vol.val,t_tmp.txt,0
 prints "#GET,SPRAY_MS,",0
 prints t_tmp.txt,0
@@ -677,19 +677,19 @@ prints ";",0
 if(n_spray_vol.val==200)
 {
   n_spray_vol.val=150
-  t_spray_vol.txt="150ml"
+  t_spray_vol.txt="140ml"
 }else if(n_spray_vol.val==150)
 {
   n_spray_vol.val=100
-  t_spray_vol.txt="100ml"
+  t_spray_vol.txt="90ml"
 }else if(n_spray_vol.val==100)
 {
   n_spray_vol.val=50
-  t_spray_vol.txt="50ml"
+  t_spray_vol.txt="40ml"
 }else
 {
   n_spray_vol.val=200
-  t_spray_vol.txt="200ml"
+  t_spray_vol.txt="190ml"
 }
 ```
 
